@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/benchmarks/" />
+  <Folder Name="/samples/" />
+  <Folder Name="/Solution Items/" />
+  <Folder Name="/src/">
+    <Project Path="src/MicroORM/MicroORM.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+</Solution>
