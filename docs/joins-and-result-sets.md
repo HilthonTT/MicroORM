@@ -1,0 +1,87 @@
+# Joins and multiple result sets
+
+## Multi-mapping a join
+
+`QueryAsync<T1, T2, TResult>` splits each row of a join into two objects and combines them with
+your function. Columns are split at the `splitOn` column, which defaults to `Id`. The search
+starts after the previous object's first column, so both tables can have an `id` column.
+
+```csharp
+var orders = await db.QueryAsync<Order, Customer, OrderView>($"""
+    SELECT o.id, o.placed_at, o.total, c.id, c.name, c.email
+    FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
+    WHERE o.placed_at >= {since}
+    """,
+    (order, customer) => new OrderView(order, customer));
+```
+
+- List each object's columns together, the first object's columns first.
+- **Unmatched `LEFT JOIN`s:** when the first column of an object's range is `NULL`, that object
+  is `null` (or `default` for value types).
+- Each range is materialized like any query result, so an object can be an entity, a record, a
+  scalar or a `Row`.
+
+### Three objects
+
+`QueryAsync<T1, T2, T3, TResult>` splits each row into three. Give one split column per object
+after the first, separated by commas:
+
+```csharp
+var lines = await db.QueryAsync<OrderLine, Product, Supplier, LineView>($"""
+    SELECT l.order_id, l.line_no, l.quantity, p.product_id, p.name, s.supplier_id, s.name
+    FROM order_lines l
+    JOIN products p ON p.product_id = l.product_id
+    JOIN suppliers s ON s.supplier_id = p.supplier_id
+    """,
+    (line, product, supplier) => new LineView(line, product, supplier),
+    splitOn: "product_id,supplier_id");
+```
+
+### One-to-many
+
+Multi-mapping returns one result per row. To build a parent with its children, group the rows:
+
+```csharp
+var rows = await db.QueryAsync<Order, OrderLine, (Order Order, OrderLine? Line)>($"""
+    SELECT o.id, o.placed_at, l.order_id, l.line_no, l.product, l.quantity
+    FROM orders o LEFT JOIN order_lines l ON l.order_id = o.id
+    """,
+    (order, line) => (order, line), splitOn: "order_id");
+
+var orders = rows.GroupBy(r => r.Order.Id).Select(g =>
+{
+    var order = g.First().Order;
+    order.Lines = g.Where(r => r.Line is not null).Select(r => r.Line!).ToList();
+    return order;
+}).ToList();
+```
+
+## Multiple result sets
+
+`QueryMultipleAsync` runs one command that returns several result sets. Read them in order,
+then dispose the reader to release the connection:
+
+```csharp
+await using var results = await db.QueryMultipleAsync($"""
+    SELECT * FROM orders WHERE id = {id};
+    SELECT * FROM order_lines WHERE order_id = {id} ORDER BY line_no;
+    SELECT COUNT(*) FROM order_notes WHERE order_id = {id};
+    """);
+
+var order = await results.ReadSingleAsync<Order>();
+var lines = await results.ReadAsync<OrderLine>();
+var notes = await results.ReadSingleAsync<long>();
+```
+
+| Method | Reads the next result set and returns |
+|---|---|
+| `ReadAsync<T>()` / `Read<T>()` | every row |
+| `ReadFirstOrDefaultAsync<T>()` / `ReadFirstOrDefault<T>()` | the first row, or default |
+| `ReadSingleAsync<T>()` / `ReadSingle<T>()` | the only row; throws on zero or several |
+
+Reading past the last result set throws `InvalidOperationException`. The command is logged
+once, when the reader is disposed, with the total elapsed time.
+
+All four databases accept several statements in one command. Stored procedures that return
+several result sets work too: call them with raw SQL (`EXEC proc ...` on SQL Server,
+`CALL proc(...)` on MySQL).

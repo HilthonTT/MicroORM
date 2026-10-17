@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet format MicroORM.slnx --verify-no-changes
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet restore MicroORM.slnx
+      - run: dotnet build MicroORM.slnx -c Release --no-restore
+      - name: Test (SQLite + unit)
+        run: dotnet test MicroORM.slnx -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./coverage
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/**/coverage.cobertura.xml
+
+  integration:
+    name: Integration (PostgreSQL, SQL Server, MySQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: microorm
+          POSTGRES_DB: microorm
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: MicroOrm_Passw0rd!
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'MicroOrm_Passw0rd!' -Q 'SELECT 1' -b -o /dev/null"
+          --health-interval 10s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: microorm
+          MYSQL_DATABASE: microorm
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmicroorm"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      MICROORM_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=microorm;Database=microorm
+      MICROORM_TEST_SQLSERVER: Server=localhost,1433;User Id=sa;Password=MicroOrm_Passw0rd!;TrustServerCertificate=true;Database=master
+      MICROORM_TEST_MYSQL: Server=localhost;Port=3306;User ID=root;Password=microorm;Database=microorm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet test tests/MicroORM.Tests -c Release --filter "FullyQualifiedName~Integration"
+
+  pack:
+    name: Pack
+    needs: [format, test, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Pack preview
+        run: dotnet pack src/MicroORM -c Release -o artifacts --version-suffix "ci.${{ github.run_number }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: artifacts/*

@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in MicroORM does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a bug. A small reproduction is the fastest way to a fix.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead? Include the exception and stack trace if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The entity, the MicroORM call, and the table schema. Enable `MicroOptions.Log` and paste the generated SQL if it is relevant.
+      render: csharp
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      multiple: true
+      options: [SQLite, PostgreSQL, SQL Server, MySQL / MariaDB, Other]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: MicroORM, .NET, and the database provider package.
+      placeholder: MicroORM 0.1.0, .NET 10.0.0, Npgsql 10.0.3
+    validations:
+      required: true

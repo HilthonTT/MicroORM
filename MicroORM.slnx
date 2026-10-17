@@ -1,9 +1,28 @@
 <Solution>
-  <Folder Name="/benchmarks/" />
-  <Folder Name="/samples/" />
-  <Folder Name="/Solution Items/" />
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="CHANGELOG.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Solution Items/.github/">
+    <File Path=".github/dependabot.yml" />
+    <File Path=".github/workflows/ci.yml" />
+    <File Path=".github/workflows/codeql.yml" />
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/MicroORM.Benchmarks/MicroORM.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/MicroORM.Samples.QuickStart/MicroORM.Samples.QuickStart.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/MicroORM/MicroORM.csproj" />
   </Folder>
-  <Folder Name="/tests/" />
+  <Folder Name="/tests/">
+    <Project Path="tests/MicroORM.Tests/MicroORM.Tests.csproj" />
+  </Folder>
 </Solution>

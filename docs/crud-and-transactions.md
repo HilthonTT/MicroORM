@@ -1,0 +1,200 @@
+# CRUD and transactions
+
+Every operation on this page has an `...Async` form and a synchronous form (`InsertAsync` /
+`Insert`). See [Synchronous API](#synchronous-api).
+
+## Single-entity operations
+
+| Method | What it does |
+|---|---|
+| `InsertAsync(entity)` | Inserts the entity. A database-generated key is read back and assigned. |
+| `InsertManyAsync(entities)` | Inserts in order. Outside a transaction, the batch runs in its own transaction (all-or-nothing). Returns the count. |
+| `UpdateAsync(entity)` | Writes every non-key, non-generated column, matched by key. Returns `true` if a row matched. |
+| `DeleteAsync(entity)` | Deletes by key. Returns `true` if a row was deleted. |
+| `DeleteByKeyAsync(key)` | Deletes by key value; pass a tuple for a [composite key](mapping.md#composite-keys). |
+| `FindAsync(key)` | Returns the entity with that key, or `null`; pass a tuple for a composite key. |
+| `UpsertAsync(entity, on?)` | Inserts, or updates the existing row, in one atomic statement. See [Upsert](#upsert). |
+
+```csharp
+var people = db.Table<Person>();
+
+var ada = new Person { Name = "Ada", Age = 36 };
+await people.InsertAsync(ada);              // ada.Id is assigned from the database
+
+ada.Age++;
+await people.UpdateAsync(ada);              // UPDATE "Person" SET "Name" = @p0, "Age" = @p1, ... WHERE "Id" = @pN
+
+var same = await people.FindAsync(ada.Id);
+await people.DeleteAsync(ada);
+```
+
+How each database returns a generated key:
+
+| Database | Statement |
+|---|---|
+| SQLite, PostgreSQL | `INSERT ... RETURNING id` |
+| SQL Server | `INSERT ...; SELECT CAST(SCOPE_IDENTITY() AS bigint)` (works with triggers) |
+| MySQL | `INSERT ...; SELECT LAST_INSERT_ID()` |
+
+`UpdateAsync` writes **all** updatable columns. MicroORM doesn't track changes. To update a few
+columns without loading the entity, use `ExecuteUpdateAsync` (see [Querying](querying.md#set-based-operations)).
+
+## Upsert
+
+`UpsertAsync` inserts the entity, or updates the row that already has the same key, in one
+atomic statement:
+
+```csharp
+await db.Table<Tag>().UpsertAsync(new Tag { Code = code, Label = "urgent" });          // match on the key
+await db.Table<Customer>().UpsertAsync(customer, on: c => c.Email);                    // match on a unique column
+await db.Table<Membership>().UpsertAsync(membership, on: m => new { m.TeamId, m.UserId });
+```
+
+- `on` names columns with a unique constraint. It defaults to the primary key.
+- A generated key is read back on both the insert and the update path.
+- If the key is an identity column and you omit `on`, MicroORM *saves* instead: an entity with a
+  default key is inserted, and any other is updated (or inserted with a new key if its row is gone).
+
+How each database does it:
+
+| Database | Statement |
+|---|---|
+| SQLite, PostgreSQL | `INSERT ... ON CONFLICT (cols) DO UPDATE SET ... RETURNING id` |
+| SQL Server | `MERGE ... WITH (HOLDLOCK) ... OUTPUT INSERTED.id` |
+| MySQL / MariaDB | `INSERT ... ON DUPLICATE KEY UPDATE ...` (matches on *any* unique key; `on` is not used) |
+
+Upsert writes the version column as is and doesn't check it.
+
+## Optimistic concurrency
+
+Mark an `int` or `long` property with `[ConcurrencyCheck]` (or `IsVersion(x => x.Version)`
+fluently). MicroORM then checks it on every update and delete:
+
+```csharp
+public class Document
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    [ConcurrencyCheck] public int Version { get; set; }
+}
+
+var doc = await documents.FindAsync(id);
+doc!.Title = "Edited";
+try
+{
+    await documents.UpdateAsync(doc);    // UPDATE ... SET title = @p0, version = COALESCE(version, 0) + 1 WHERE id = @p1 AND version = @p2
+}
+catch (MicroConcurrencyException ex)
+{
+    // Someone else changed or deleted the row since it was read. ex.Entity is the rejected entity.
+}
+```
+
+- `UpdateAsync` increments the version in the database and on the entity.
+- If no row matches the key *and* version, `UpdateAsync` and `DeleteAsync` throw
+  `MicroConcurrencyException` and leave the entity unchanged.
+- `DeleteByKeyAsync`, `ExecuteUpdateAsync`, `ExecuteDeleteAsync` and `UpsertAsync` don't check versions.
+
+## Transactions
+
+`MicroTransaction` has the same API as `MicroDb` (`Table<T>()`, `QueryAsync`, `ExecuteAsync`, …).
+Every operation runs on the transaction's single connection.
+
+### Scoped: commit on success, roll back on exception
+
+```csharp
+await db.TransactionAsync(async tx =>
+{
+    var from = await tx.Table<Account>().FindAsync(fromId);
+    var to = await tx.Table<Account>().FindAsync(toId);
+    from!.Balance -= amount;
+    to!.Balance += amount;
+    await tx.Table<Account>().UpdateAsync(from);
+    await tx.Table<Account>().UpdateAsync(to);
+});
+
+// With a result and an isolation level:
+var orderId = await db.TransactionAsync(async tx =>
+{
+    var order = new Order { /* ... */ };
+    await tx.Table<Order>().InsertAsync(order);
+    return order.Id;
+}, IsolationLevel.Serializable);
+```
+
+### Manual
+
+```csharp
+await using var tx = await db.BeginTransactionAsync();
+await tx.ExecuteAsync($"UPDATE stock SET qty = qty - {n} WHERE sku = {sku}");
+if (await tx.ScalarAsync<int>($"SELECT qty FROM stock WHERE sku = {sku}") < 0)
+{
+    await tx.RollbackAsync();
+    return;
+}
+await tx.CommitAsync();
+// Disposing an uncommitted transaction rolls it back.
+```
+
+Rules:
+
+- A transaction owns **one connection**. Don't run its operations concurrently (no `Task.WhenAll` over the same `tx`).
+- After `CommitAsync` or `RollbackAsync`, using the transaction throws.
+- `tx.DbTransaction` exposes the provider transaction for interop with other ADO.NET code.
+
+### Writing code that works with or without a transaction
+
+Take a `MicroSession`, the base class of both:
+
+```csharp
+static Task ArchiveAsync(MicroSession session, DateTime cutoff) =>
+    session.Table<Order>().Where(o => o.PlacedAt < cutoff).ExecuteUpdateAsync(s => s.Set(o => o.Archived, true));
+
+await ArchiveAsync(db, cutoff);                             // its own connection
+await db.TransactionAsync(tx => ArchiveAsync(tx, cutoff));  // inside the transaction
+```
+
+## Synchronous API
+
+Every asynchronous method has a synchronous twin with the same name minus `Async`:
+`Query`, `QueryFirstOrDefault`, `QuerySingle`, `Execute`, `Scalar`, `QueryMultiple`, `Stream`,
+`Insert`, `Update`, `Delete`, `Find`, `Upsert`, `ToList`, `Count`, `Sum`, `ExecuteUpdate`,
+`BeginTransaction`, `Transaction`, `Commit`, `Rollback`, `ExecuteProcedure`, and so on.
+
+```csharp
+db.Transaction(tx =>
+{
+    var account = tx.Table<Account>().Find(id)!;
+    account.Balance -= amount;
+    tx.Table<Account>().Update(account);
+});
+```
+
+The synchronous methods call the provider's synchronous ADO.NET methods (`ExecuteReader`, `Open`,
+`Commit`). They never block on asynchronous work, so they're safe in code without a
+synchronization context and in code with one. Both forms share one implementation.
+
+## Logging
+
+`MicroOptions.Log` receives every command with its parameters, duration and any error:
+
+```csharp
+var db = new MicroDb(dialect, factory, new MicroOptions
+{
+    Log = entry =>
+    {
+        if (entry.Error is not null)
+            logger.LogError(entry.Error, "SQL failed: {Sql}", entry.Sql);
+        else if (entry.Elapsed > TimeSpan.FromMilliseconds(200))
+            logger.LogWarning("Slow SQL ({Elapsed} ms): {Sql}", entry.Elapsed.TotalMilliseconds, entry.Sql);
+    },
+});
+```
+
+For queries, `Elapsed` includes reading the rows. Parameter values can contain personal data,
+so be careful about logging `entry.Parameters`.
+
+## Command timeout
+
+`MicroOptions.CommandTimeout` (in seconds) applies to every command. When it is `null`, the
+provider's default is used.

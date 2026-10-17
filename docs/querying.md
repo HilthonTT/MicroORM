@@ -1,0 +1,150 @@
+# Querying
+
+`db.Table<T>()` returns a `Table<T>`, which is also a `Query<T>`. Queries are **immutable**:
+every method returns a new query, so you can share and extend a base query safely. Nothing runs
+until you call a terminal method. Every terminal method has an `...Async` form and a synchronous
+form (`ToListAsync()` / `ToList()`).
+
+```csharp
+var active = db.Table<Customer>().Where(c => c.Active);           // reusable
+var newest = await active.OrderByDescending(c => c.CreatedAt).Take(10).ToListAsync();
+var total = await active.CountAsync();
+```
+
+## Building a query
+
+| Method | SQL |
+|---|---|
+| `Where(c => ...)` | `WHERE`; repeated calls are joined with `AND` |
+| `Where($"...")` | `WHERE` with a raw, parameterized condition |
+| `OrderBy(c => c.X)` / `OrderByDescending` | `ORDER BY`; replaces any previous ordering |
+| `ThenBy(c => c.X)` / `ThenByDescending` | adds a secondary sort key |
+| `Skip(n)` / `Take(n)` | paging in the dialect's syntax |
+
+## Running a query
+
+| Method | Returns |
+|---|---|
+| `ToListAsync()` / `ToList()` | `List<T>` |
+| `StreamAsync()` / `Stream()` | `IAsyncEnumerable<T>` / `IEnumerable<T>` |
+| `FirstOrDefaultAsync()` / `FirstOrDefaultAsync(c => ...)` | `T?` |
+| `SingleAsync()` | `T`; throws on zero or several rows |
+| `CountAsync()` | `long` |
+| `AnyAsync()` | `bool` |
+| `SumAsync(c => ...)` | the sum; `0` when there are no rows |
+| `MinAsync(c => ...)` / `MaxAsync(c => ...)` | the extreme value; `default` (`null` for nullable selectors) when there are no rows |
+| `AverageAsync(c => ...)` | `double?`; integers are averaged without truncation; `null` when there are no rows |
+| `Select(c => ...)` | a `Projection` with the same terminal methods (see [Projections](#projections)) |
+| `ToSql()` / `ToString()` | the SQL, without running it |
+
+Aggregates respect `Where`. After `Skip` or `Take`, they apply to that page only, through a subquery:
+
+```csharp
+var total = await orders.Where(o => o.Paid).SumAsync(o => o.Amount);
+var oldest = await people.MaxAsync(p => (int?)p.Age);             // null for an empty table
+var topThree = await scores.OrderByDescending(s => s.Points).Take(3).SumAsync(s => s.Points);
+```
+
+## What translates
+
+The translator handles a deliberately focused subset of C#. **Anything else throws
+`NotSupportedException` instead of loading the table into memory.** For anything outside the
+subset, use `Where($"...")`.
+
+| C# | SQL |
+|---|---|
+| `==` `!=` `<` `<=` `>` `>=` | `=` `<>` `<` `<=` `>` `>=` |
+| `&&` `\|\|` `!` | `AND` `OR` `NOT` |
+| `+` `-` `*` `/` `%` | arithmetic |
+| `a + b` on strings | `\|\|`, `+` or `CONCAT()` depending on the dialect |
+| `x == null`, `x != null` | `IS NULL`, `IS NOT NULL` |
+| `x.HasValue`, `x.Value` | `IS NOT NULL`, the column |
+| `a ?? b` | `COALESCE(a, b)` |
+| `c.Active` (a `bool` column on its own) | `active = TRUE` (as a parameter) |
+| `s.StartsWith(v)`, `s.EndsWith(v)`, `s.Contains(v)` | `LIKE` with `%`, `_`, `[` and `!` escaped |
+| `s.ToUpper()`, `s.ToLower()`, `s.Trim()` | `UPPER`, `LOWER`, `TRIM` |
+| `s.Length` | `LENGTH`, `LEN` or `CHAR_LENGTH` |
+| `string.IsNullOrEmpty(s)` | `(s IS NULL OR s = '')` |
+| `list.Contains(c.X)`, `array.Contains(c.X)` | `X IN (@p0, @p1, ...)` |
+| Captured variables, constants, method calls that don't use the row | evaluated in .NET and sent as parameters |
+
+```csharp
+var ids = new[] { 1, 2, 3 };
+var minimum = 18;
+db.Table<User>().Where(u => ids.Contains(u.Id) && u.Age >= minimum && u.Email != null);
+// WHERE ((("id" IN (@p0, @p1, @p2)) AND ("age" >= @p3)) AND ("email" IS NOT NULL))
+```
+
+Notes:
+
+- `LIKE` case sensitivity follows the database: case-sensitive in PostgreSQL,
+  case-insensitive for ASCII in SQLite, and set by the collation in SQL Server and MySQL.
+- Only mapped properties can appear in a query. Computed C# properties throw.
+- Sorting by an expression works too: `OrderBy(u => u.Name.ToLower())`.
+
+## Raw conditions
+
+`Where($"...")` mixes freely with translated predicates:
+
+```csharp
+db.Table<User>()
+  .Where(u => u.Active)
+  .Where($"date_trunc('day', created_at) = {day}")
+  .OrderBy(u => u.Name);
+```
+
+## Set-based operations
+
+Update or delete every matching row in **one statement**, without loading entities:
+
+```csharp
+// UPDATE "users" SET "active" = @p0, "visits" = ("visits" + @p1) WHERE ("last_seen" < @p2)
+await db.Table<User>()
+    .Where(u => u.LastSeen < cutoff)
+    .ExecuteUpdateAsync(s => s
+        .Set(u => u.Active, false)
+        .SetFrom(u => u.Visits, u => u.Visits + 1));
+
+// DELETE FROM "sessions" WHERE ("expires_at" < @p0)
+var removed = await db.Table<Session>().Where(s => s.ExpiresAt < DateTime.UtcNow).ExecuteDeleteAsync();
+```
+
+- `Set(column, value)` assigns a value. `SetFrom(column, row => expression)` assigns an expression of the row.
+- Both methods return the number of affected rows.
+- They reject `OrderBy`, `Skip` and `Take`, because those have no portable meaning in `UPDATE` and `DELETE`.
+- **Without `Where`, they affect the whole table.**
+
+## Projections
+
+`Select` chooses what each row returns. Filter, sort and page first, then project:
+
+```csharp
+// Anonymous types: each value is aliased with its member name.
+var names = await people.Where(p => p.Active).OrderBy(p => p.Name)
+    .Select(p => new { p.Id, Upper = p.Name.ToUpper(), Adult = p.Age >= 18 })
+    .ToListAsync();
+// SELECT "id" AS "Id", UPPER("name") AS "Upper", CASE WHEN ("age" >= @p0) THEN 1 ELSE 0 END AS "Adult" ...
+
+// Records (by constructor parameter name), DTOs (by property name) and single values.
+var summaries = await people.Select(p => new PersonSummary(p.Id, p.Name, p.Age)).ToListAsync();
+var dtos = await people.Select(p => new NameDto { Id = p.Id, Upper = p.Name.ToUpper() }).ToListAsync();
+var emails = await people.Where(p => p.Email != null).Select(p => p.Email).ToListAsync();
+```
+
+Each projected value can use anything from [What translates](#what-translates). Conditions
+become `CASE WHEN ... THEN 1 ELSE 0 END`, because SQL Server doesn't allow a bare predicate in a
+`SELECT` list.
+
+For joins, grouping and other shapes a single table can't express, write the SQL and materialize
+into a record (see also [Joins and result sets](joins-and-result-sets.md)):
+
+```csharp
+public record CustomerTotal(int Id, string Name, decimal Spend);
+
+var totals = await db.QueryAsync<CustomerTotal>($"""
+    SELECT c.id, c.name, SUM(o.amount) AS spend
+    FROM customer c JOIN orders o ON o.customer_id = c.id
+    WHERE o.placed_at >= {since}
+    GROUP BY c.id, c.name
+    """);
+```

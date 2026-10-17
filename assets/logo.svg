@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">MicroORM</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#312E81"/>
+      <stop offset="1" stop-color="#1E1B4B"/>
+    </linearGradient>
+    <linearGradient id="microorm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Tile -->
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <!-- Warp (vertical threads: the columns) -->
+  <g fill="#E0E7FF">
+    <rect x="57" y="44" width="22" height="168" rx="11"/>
+    <rect x="97" y="44" width="22" height="168" rx="11"/>
+    <rect x="137" y="44" width="22" height="168" rx="11"/>
+    <rect x="177" y="44" width="22" height="168" rx="11"/>
+  </g>
+
+  <!-- Weft threads (horizontal threads: the rows), with a background-colored edge so crossings read as depth -->
+  <g fill="url(#microorm)" stroke="#1E1B4B" stroke-width="5" paint-order="stroke">
+    <rect x="40" y="77" width="176" height="22" rx="11"/>
+    <rect x="40" y="117" width="176" height="22" rx="11"/>
+    <rect x="40" y="157" width="176" height="22" rx="11"/>
+  </g>
+
+  <!-- Warp passing over the weft on alternate crossings: the weave -->
+  <g fill="#E0E7FF" stroke="#1E1B4B" stroke-width="5" paint-order="stroke">
+    <rect x="97" y="72" width="22" height="32"/>
+    <rect x="177" y="72" width="22" height="32"/>
+    <rect x="57" y="112" width="22" height="32"/>
+    <rect x="137" y="112" width="22" height="32"/>
+    <rect x="97" y="152" width="22" height="32"/>
+    <rect x="177" y="152" width="22" height="32"/>
+  </g>
+</svg>

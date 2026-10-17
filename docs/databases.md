@@ -1,0 +1,63 @@
+# Databases
+
+MicroORM has no dependency on any database driver. A `SqlDialect` tells it how to quote identifiers,
+page results, return generated keys, concatenate strings and measure string length.
+
+| | SQLite | PostgreSQL | SQL Server | MySQL / MariaDB |
+|---|---|---|---|---|
+| Dialect | `SqlDialect.Sqlite` | `SqlDialect.PostgreSql` | `SqlDialect.SqlServer` | `SqlDialect.MySql` |
+| Identifier quoting | `"name"` | `"name"` | `[name]` | `` `name` `` |
+| Paging | `LIMIT n OFFSET m` | `LIMIT n OFFSET m` | `OFFSET m ROWS FETCH NEXT n ROWS ONLY` | `LIMIT n OFFSET m` |
+| Generated key | `RETURNING` | `RETURNING` | `SCOPE_IDENTITY()` | `LAST_INSERT_ID()` |
+| String concat | `\|\|` | `\|\|` | `+` | `CONCAT()` |
+| String length | `LENGTH` | `LENGTH` | `LEN` | `CHAR_LENGTH` |
+| Parameter prefix | `@` | `@` | `@` | `@` |
+
+## SQLite
+
+- SQLite stores `Guid`, `DateTime`, `DateTimeOffset` and `decimal` as text. MicroORM converts them back
+  when reading. **Comparisons in SQL are text comparisons.** Date ordering works with the ISO
+  format Microsoft.Data.Sqlite writes, but decimal ordering does not. Store money as integer cents
+  if you need to sort or compare it in SQL.
+- A named in-memory database (`Mode=Memory;Cache=Shared`) disappears when its last connection
+  closes. MicroORM opens a connection per operation, so keep one connection open for the database's
+  lifetime, as the [sample](../samples/MicroORM.Samples.QuickStart/Program.cs) does.
+
+## PostgreSQL
+
+- Use `NamingConvention.SnakeCase` or `LowerCase`. MicroORM quotes identifiers, and unquoted
+  PostgreSQL names are lowercase.
+- Npgsql maps `DateTime` with `Kind = Utc` to `timestamptz`. Store UTC times in `timestamptz` columns.
+- Prefer the `DbDataSource` constructor: `new MicroDb(SqlDialect.PostgreSql, NpgsqlDataSource.Create(cs))`.
+
+## SQL Server
+
+- Paging without `OrderBy` adds `ORDER BY (SELECT NULL)`, because `OFFSET` requires an `ORDER BY`.
+  Add an explicit `OrderBy` for stable pages.
+- String parameters get a fixed size (4000, or `max` for longer strings), so a statement reuses one
+  cached plan. `DateTime` parameters are sent as `datetime2`.
+- Generated keys use `SCOPE_IDENTITY()`, which works on tables with triggers.
+
+## MySQL / MariaDB
+
+- `||` means `OR` in MySQL, so string concatenation uses `CONCAT()`.
+- With MySqlConnector, `CHAR(36)` columns map to `Guid`.
+- `Skip` without `Take` uses MySQL's documented `LIMIT 18446744073709551615`.
+
+## Another database
+
+Subclass `SqlDialect`. Only `Name` and `QuotePart` are required; override `AppendPaging`,
+`Insert`, `Concat`, `LengthFunction`, `ParameterName` or `ConfigureParameter` where your
+database differs from the defaults (which follow PostgreSQL and SQLite).
+
+```csharp
+public sealed class MyDatabaseDialect : SqlDialect
+{
+    public override string Name => "MyDatabase";
+
+    protected override string QuotePart(string part) => "\"" + part.Replace("\"", "\"\"") + "\"";
+
+    // If the provider uses another placeholder style, such as :p0
+    public override string ParameterName(int index) => ":p" + index;
+}
+```

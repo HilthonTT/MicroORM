@@ -1,0 +1,51 @@
+# Benchmarks
+
+`benchmarks/MicroORM.Benchmarks` compares MicroORM with [Dapper](https://github.com/DapperLib/Dapper)
+using [BenchmarkDotNet](https://benchmarkdotnet.org/). Both libraries run against the same
+in-memory SQLite database of 1,000 rows, with the same provider and connection handling: each
+operation opens a pooled connection, as both libraries do in typical use.
+
+## Results
+
+BenchmarkDotNet `ShortRun` job, .NET 10.0.13, x64. Absolute times depend on the machine; the
+ratios are what matter.
+
+| Scenario | Mean | Ratio to Dapper | Allocated |
+|---|---:|---:|---:|
+| Dapper: one row by id | 22.34 µs | 1.00 | 2.68 KB |
+| MicroORM: one row by id, raw SQL | 21.89 µs | 0.98 | 3.87 KB |
+| MicroORM: one row by id, `Find` | 24.29 µs | 1.09 | 6.47 KB |
+| MicroORM: one row by id, typed `Where` | 26.02 µs | 1.16 | 7.47 KB |
+| Dapper: 500 rows | 422.82 µs | 1.00 | 295.64 KB |
+| MicroORM: 500 rows | 423.67 µs | 1.00 | 296.55 KB |
+
+What this shows:
+
+- **Materialization is at parity.** Reading 500 rows takes the same time and memory as Dapper.
+- **Raw SQL is at parity.** The interpolated-string API costs about 1 KB more per query than
+  Dapper's anonymous-object parameters, with no measurable time difference.
+- **Typed queries cost a few microseconds.** `Find` and `Where` translate an expression into SQL
+  on every call: about 2–4 µs and 4–5 KB more. That's small next to a real network round trip,
+  but use raw SQL on the very hottest paths.
+
+## Findings that changed the code
+
+The first run showed MicroORM allocating 12% more than Dapper for 500 rows: about 72 bytes per row.
+SQLite returns every integer as `long`, and converting it to an `int` or `bool` property through
+`Convert.ChangeType` boxed the result a second time. `ValueConverter` now has allocation-free fast
+paths for those widening conversions, which closed the gap entirely.
+
+Typed column reads (`GetInt32` and similar instead of `GetValue`) were considered and **not**
+adopted. With materialization already at parity, they would add complexity without a measurable
+gain. They would also be unsafe on SQLite, where a column's runtime type can vary from row to row.
+
+## Running the benchmarks
+
+```shell
+dotnet run -c Release --project benchmarks/MicroORM.Benchmarks -- --filter "*"
+# Faster, less precise:
+dotnet run -c Release --project benchmarks/MicroORM.Benchmarks -- --filter "*" --job short
+```
+
+Add a scenario by adding a `[Benchmark]` method to `QueryBenchmarks`. Keep the Dapper and MicroORM
+versions of a scenario identical apart from the library call.
