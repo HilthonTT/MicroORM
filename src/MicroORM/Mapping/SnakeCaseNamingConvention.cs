@@ -22,7 +22,7 @@ internal sealed class SnakeCaseNamingConvention : NamingConvention
                 char next = i + 1 < name.Length ? name[i + 1] : '\0';
 
                 bool startsWord = i > 0 && prev != '_' && 
-                    (char.IsLower(prev) || char.IsDigit(prev) || (char.IsUpper(prev) && char.IsLower(next));
+                    (char.IsLower(prev) || char.IsDigit(prev) || (char.IsUpper(prev) && char.IsLower(next)));
 
                 if (startsWord)
                 {
