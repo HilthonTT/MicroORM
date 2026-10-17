@@ -1,5 +1,6 @@
-﻿namespace MicroORM.Mapping;
+namespace MicroORM.Mapping;
 
+/// <summary>Non-generic storage for fluent mapping overrides.</summary>
 public abstract class EntityConfiguration
 {
     internal string? Table { get; set; }

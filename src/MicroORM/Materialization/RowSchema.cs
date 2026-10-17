@@ -1,4 +1,4 @@
-﻿namespace MicroORM.Materialization;
+namespace MicroORM.Materialization;
 
 internal sealed class RowSchema
 {
@@ -12,7 +12,7 @@ internal sealed class RowSchema
         }
     }
 
-    public string[] Names { get; set; }
+    public string[] Names { get; }
 
-    public Dictionary<string, int> Ordinals { get; set; }
+    public Dictionary<string, int> Ordinals { get; }
 }

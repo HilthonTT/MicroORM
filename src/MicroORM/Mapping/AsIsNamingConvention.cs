@@ -1,4 +1,4 @@
-﻿namespace MicroORM.Mapping;
+namespace MicroORM.Mapping;
 
 internal sealed class AsIsNamingConvention : NamingConvention
 {

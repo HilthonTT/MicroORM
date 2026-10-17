@@ -1,8 +1,8 @@
-﻿namespace MicroORM.Materialization;
+namespace MicroORM.Materialization;
 
 internal static class ScalarTypes
 {
-    private static readonly HashSet<Type> Known = 
+    private static readonly HashSet<Type> Known =
     [
         typeof(string), typeof(char), typeof(bool),
         typeof(byte), typeof(sbyte), typeof(short), typeof(ushort), typeof(int), typeof(uint), typeof(long), typeof(ulong),

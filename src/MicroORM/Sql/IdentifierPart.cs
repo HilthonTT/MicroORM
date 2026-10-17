@@ -1,3 +1,3 @@
-﻿namespace MicroORM.Sql;
+namespace MicroORM.Sql;
 
 internal sealed record IdentifierPart(string Name);

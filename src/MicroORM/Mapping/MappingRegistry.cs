@@ -1,4 +1,4 @@
-﻿using MicroORM.TypeHandlers;
+using MicroORM.TypeHandlers;
 using System.Collections.Concurrent;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
@@ -17,8 +17,8 @@ internal sealed class MappingRegistry
     private readonly TypeHandlerRegistry _handlers;
 
     public MappingRegistry(
-        NamingConvention naming, 
-        IReadOnlyDictionary<Type, EntityConfiguration> configurations, 
+        NamingConvention naming,
+        IReadOnlyDictionary<Type, EntityConfiguration> configurations,
         TypeHandlerRegistry handlers)
     {
         _naming = naming;
@@ -96,7 +96,7 @@ internal sealed class MappingRegistry
         var versionType = Nullable.GetUnderlyingType(version.PropertyType) ?? version.PropertyType;
         return versionType == typeof(int) || versionType == typeof(long)
             ? version.Name
-            : throw new NotSupportedException($"'{type.Name}.{version.Name}' is a concurrency version but is {version.PropertyType.Name}; Weft versions must be int or long.");
+            : throw new NotSupportedException($"'{type.Name}.{version.Name}' is a concurrency version but is {version.PropertyType.Name}; MicroORM versions must be int or long.");
     }
 
     private static ValueGeneration GenerationFor(PropertyInfo property, bool isSingleKey, EntityConfiguration? config)
@@ -116,7 +116,7 @@ internal sealed class MappingRegistry
             };
         }
 
-        // SQL Server rowversion: the database writes it, Weft only reads it.
+        // SQL Server rowversion: the database writes it, MicroORM only reads it.
         if (property.GetCustomAttribute<TimestampAttribute>() is not null)
         {
             return ValueGeneration.Computed;

@@ -1,4 +1,4 @@
-﻿namespace MicroORM.Dialects;
+namespace MicroORM.Dialects;
 
 internal sealed class PostgreSqlDialect : SqlDialect
 {

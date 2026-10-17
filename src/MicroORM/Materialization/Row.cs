@@ -1,9 +1,13 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Dynamic;
 
 namespace MicroORM.Materialization;
 
+/// <summary>
+/// An untyped result row. Read columns by name (<c>row["name"]</c>), or treat the row as
+/// <see langword="dynamic"/> (<c>row.name</c>). Column lookups ignore case.
+/// </summary>
 [SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "A row is the natural name for a result row.")]
 public sealed class Row : DynamicObject, IReadOnlyDictionary<string, object?>
 {

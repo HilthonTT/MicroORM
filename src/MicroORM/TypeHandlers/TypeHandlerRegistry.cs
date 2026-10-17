@@ -1,4 +1,4 @@
-﻿using MicroORM.Materialization;
+using MicroORM.Materialization;
 
 namespace MicroORM.TypeHandlers;
 

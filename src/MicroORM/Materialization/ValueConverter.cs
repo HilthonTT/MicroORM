@@ -1,11 +1,17 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace MicroORM.Materialization;
 
+/// <summary>
+/// Converts raw provider values to CLR types. Providers disagree on representations (SQLite returns
+/// <see cref="long"/> for every integer and text for GUIDs, dates and decimals), so materialization
+/// goes through one forgiving conversion point.
+/// </summary>
 public static class ValueConverter
 {
+    /// <summary>Converts a database value to <typeparamref name="T"/>; <see cref="DBNull"/> becomes default.</summary>
     public static T To<T>(object? value)
     {
         if (value is T typed)
@@ -53,6 +59,7 @@ public static class ValueConverter
         return Unsafe.As<TSource?, TTarget>(ref nullable);
     }
 
+    /// <summary>Converts a database value to <paramref name="target"/>; <see cref="DBNull"/> becomes null or default.</summary>
     public static object? Convert(object? value, Type target)
     {
         ArgumentNullException.ThrowIfNull(target);

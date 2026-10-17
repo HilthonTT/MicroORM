@@ -1,10 +1,11 @@
-﻿using MicroORM.Dialects;
+using MicroORM.Dialects;
 using MicroORM.TypeHandlers;
 using System.Linq.Expressions;
 using System.Reflection;
 
 namespace MicroORM.Mapping;
 
+/// <summary>How a property maps to a column.</summary>
 public sealed class ColumnMap
 {
     private readonly Func<object, object?> _getter;
@@ -19,20 +20,28 @@ public sealed class ColumnMap
         _getter = CompileGetter(property);
     }
 
+    /// <summary>Gets the mapped property.</summary>
     public PropertyInfo Property { get; }
 
+    /// <summary>Gets the column name.</summary>
     public string Name { get; }
 
-    public bool IsKey { get; set; }
+    /// <summary>Gets whether this column is part of the primary key.</summary>
+    public bool IsKey { get; }
 
-    public bool IsVersion { get; set; }
+    /// <summary>Gets whether this column is the optimistic concurrency version.</summary>
+    public bool IsVersion { get; }
 
-    public ValueGeneration Generation { get; set; }
+    /// <summary>Gets how the database generates this column's value.</summary>
+    public ValueGeneration Generation { get; }
 
+    /// <summary>Gets whether the column is written by <c>INSERT</c>.</summary>
     public bool IsInsertable => Generation == ValueGeneration.None;
 
+    /// <summary>Gets whether the column is written from the entity by <c>UPDATE</c> (the version is incremented instead).</summary>
     public bool IsUpdatable => Generation == ValueGeneration.None && !IsKey && !IsVersion;
 
+    /// <summary>Reads the property value from an entity.</summary>
     public object? GetValue(object entity) => _getter(entity);
 
     internal void SetValue(object entity, object? value, TypeHandlerRegistry handlers) =>

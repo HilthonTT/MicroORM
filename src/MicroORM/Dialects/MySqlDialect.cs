@@ -1,4 +1,4 @@
-﻿namespace MicroORM.Dialects;
+namespace MicroORM.Dialects;
 
 internal sealed class MySqlDialect : SqlDialect
 {
@@ -10,7 +10,7 @@ internal sealed class MySqlDialect : SqlDialect
 
     protected override string QuotePart(string part) => "`" + part.Replace("`", "``", StringComparison.Ordinal) + "`";
 
-    public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) => 
+    public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>
         Sql.Sql.Empty.Append("CONCAT(").Append(left).Append(", ").Append(right).Append(")");
 
     public override void AppendPaging(Sql.Sql sql, int? skip, int? take, bool hasOrderBy)
@@ -37,10 +37,10 @@ internal sealed class MySqlDialect : SqlDialect
     }
 
     public override Sql.Sql Upsert(
-        string table, 
+        string table,
         IReadOnlyList<ColumnValue> values,
-        IReadOnlyList<string> conflictColumns, 
-        IReadOnlyList<string> updateColumns, 
+        IReadOnlyList<string> conflictColumns,
+        IReadOnlyList<string> updateColumns,
         string? identityColumn)
     {
         // MySQL resolves conflicts on any unique key, so conflictColumns only serves the no-op assignment.

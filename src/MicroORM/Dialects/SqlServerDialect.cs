@@ -1,4 +1,8 @@
-﻿namespace MicroORM.Dialects;
+using MicroORM.Sql;
+using System.Data;
+using System.Data.Common;
+
+namespace MicroORM.Dialects;
 
 internal sealed class SqlServerDialect : SqlDialect
 {
@@ -10,8 +14,31 @@ internal sealed class SqlServerDialect : SqlDialect
 
     protected override string QuotePart(string part) => "[" + part.Replace("]", "]]", StringComparison.Ordinal) + "]";
 
-    public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) => 
+    public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>
         Sql.Sql.Empty.Append("(").Append(left).Append(" + ").Append(right).Append(")");
+
+    public override void ConfigureParameter(DbParameter parameter, SqlParameterValue value)
+    {
+        ArgumentNullException.ThrowIfNull(parameter);
+        ArgumentNullException.ThrowIfNull(value);
+        Type? type = Nullable.GetUnderlyingType(value.ClrType ?? typeof(object)) ?? value.ClrType;
+        switch (value.Value)
+        {
+            case string s:
+                // A fixed size keeps one cached plan per statement instead of one per string length.
+                parameter.Size = s.Length <= 4000 ? 4000 : -1;
+                break;
+            case DateTime:
+                parameter.DbType = DbType.DateTime2;
+                break;
+            case null when type == typeof(byte[]):
+                parameter.DbType = DbType.Binary;
+                break;
+            case null when type == typeof(DateTime):
+                parameter.DbType = DbType.DateTime2;
+                break;
+        }
+    }
 
     public override void AppendPaging(Sql.Sql sql, int? skip, int? take, bool hasOrderBy)
     {
@@ -49,10 +76,10 @@ internal sealed class SqlServerDialect : SqlDialect
     }
 
     public override Sql.Sql Upsert(
-        string table, 
-        IReadOnlyList<ColumnValue> values, 
-        IReadOnlyList<string> conflictColumns, 
-        IReadOnlyList<string> updateColumns, 
+        string table,
+        IReadOnlyList<ColumnValue> values,
+        IReadOnlyList<string> conflictColumns,
+        IReadOnlyList<string> updateColumns,
         string? identityColumn)
     {
         if (values.Count == 0)

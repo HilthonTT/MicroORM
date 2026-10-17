@@ -1,7 +1,7 @@
-﻿using MicroORM.Dialects;
+using MicroORM.Dialects;
+using System.Collections;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Collections;
 
 namespace MicroORM.Sql;
 
@@ -32,6 +32,7 @@ public sealed class Sql
 {
     private readonly List<object> _parts;
 
+    /// <summary>Creates a handler for an interpolated string. Called by the compiler.</summary>
     public Sql(int literalLength, int formattedCount)
     {
         _parts = new List<object>((formattedCount * 2) + 1);
@@ -42,10 +43,13 @@ public sealed class Sql
         _parts = [];
     }
 
+    /// <summary>Gets a new, empty fragment.</summary>
     public static Sql Empty => new();
 
+    /// <summary>Gets whether this fragment contains no SQL at all.</summary>
     public bool IsEmpty => _parts.Count == 0;
 
+    /// <summary>Appends literal SQL text. Called by the compiler.</summary>
     public void AppendLiteral(string literal)
     {
         if (literal.Length > 0)
@@ -54,6 +58,7 @@ public sealed class Sql
         }
     }
 
+    /// <summary>Appends a nested fragment verbatim (its own parameters are preserved).</summary>
     public void AppendFormatted(Sql? fragment)
     {
         if (fragment is not null)
@@ -62,8 +67,12 @@ public sealed class Sql
         }
     }
 
+    /// <summary>Appends a nested fragment verbatim (its own parameters are preserved).</summary>
     public void AppendFormatted<T>(T value) => AddValue(value, typeof(T));
 
+    /// <summary>
+    /// Creates a fragment from trusted SQL text. Never pass user input to this method.
+    /// </summary>
     public static Sql Raw(string text)
     {
         ArgumentNullException.ThrowIfNull(text, nameof(text));
@@ -72,6 +81,10 @@ public sealed class Sql
         return sql;
     }
 
+    /// <summary>
+    /// Creates a fragment holding exactly one parameter, even for a collection. Use it for values a
+    /// type handler stores in one column, such as a list kept as JSON.
+    /// </summary>
     public static Sql Param(object? value)
     {
         var sql = new Sql();
@@ -79,6 +92,10 @@ public sealed class Sql
         return sql;
     }
 
+    /// <summary>
+    /// Creates a fragment holding an identifier (table or column name), quoted for the target
+    /// dialect when the SQL is rendered. Dotted names such as <c>dbo.users</c> are quoted per part.
+    /// </summary>
     public static Sql Identifier(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
@@ -87,6 +104,7 @@ public sealed class Sql
         return sql;
     }
 
+    /// <summary>Joins fragments with a literal separator, skipping empty fragments.</summary>
     public static Sql Join(string separator, IEnumerable<Sql> fragments)
     {
         ArgumentNullException.ThrowIfNull(fragments, nameof(fragments));
@@ -122,6 +140,7 @@ public sealed class Sql
         return sql;
     }
 
+    /// <summary>Concatenates two fragments.</summary>
     public static Sql Add(Sql left, Sql right) => left + right;
 
     internal Sql Append(string literal)
@@ -226,10 +245,10 @@ public sealed class Sql
     }
 
     private static void AppendParameter(
-        SqlDialect dialect, 
-        StringBuilder text, 
-        List<SqlParameterValue> parameters, 
-        object? value, 
+        SqlDialect dialect,
+        StringBuilder text,
+        List<SqlParameterValue> parameters,
+        object? value,
         Type? clrType)
     {
         string name = dialect.ParameterName(parameters.Count);

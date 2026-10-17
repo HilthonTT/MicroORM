@@ -1,14 +1,20 @@
-﻿using System.Linq.Expressions;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace MicroORM.Mapping;
 
+/// <summary>
+/// Fluent mapping overrides for <typeparamref name="T"/>. Anything not configured here falls back
+/// to data annotation attributes, then to the naming convention.
+/// </summary>
+/// <typeparam name="T">The entity type.</typeparam>
 public sealed class EntityBuilder<T> : EntityConfiguration
 {
     internal EntityBuilder()
     {
     }
 
+    /// <summary>Sets the table name.</summary>
     public EntityBuilder<T> ToTable(string name, string? schema = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -16,6 +22,11 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
+    /// <summary>
+    /// Sets the primary key: one property (<c>x =&gt; x.Id</c>) or, for a composite key, an
+    /// anonymous type (<c>x =&gt; new { x.OrderId, x.LineNo }</c>). The generation applies to a
+    /// single-column key.
+    /// </summary>
     public EntityBuilder<T> HasKey<TKey>(Expression<Func<T, TKey>> key, ValueGeneration? generation = null)
     {
         KeyProperties = PropertyNames(key);
@@ -32,12 +43,21 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
+    /// <summary>
+    /// Marks an integer property as the optimistic concurrency version. Updates and deletes check
+    /// it and updates increment it.
+    /// </summary>
     public EntityBuilder<T> IsVersion<TProperty>(Expression<Func<T, TProperty>> property)
     {
         VersionProperty = PropertyNames(property).Single();
         return this;
     }
 
+    /// <summary>
+    /// Sets the primary key: one property (<c>x =&gt; x.Id</c>) or, for a composite key, an
+    /// anonymous type (<c>x =&gt; new { x.OrderId, x.LineNo }</c>). The generation applies to a
+    /// single-column key.
+    /// </summary>
     public EntityBuilder<T> Column<TProperty>(Expression<Func<T, TProperty>> property, string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -45,12 +65,21 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
+    /// <summary>
+    /// Sets the primary key: one property (<c>x =&gt; x.Id</c>) or, for a composite key, an
+    /// anonymous type (<c>x =&gt; new { x.OrderId, x.LineNo }</c>). The generation applies to a
+    /// single-column key.
+    /// </summary>
     public EntityBuilder<T> Generated<TProperty>(Expression<Func<T, TProperty>> property, ValueGeneration generation)
     {
         Generation[PropertyNames(property).Single()] = generation;
         return this;
     }
 
+    /// <summary>
+    /// Marks an integer property as the optimistic concurrency version. Updates and deletes check
+    /// it and updates increment it.
+    /// </summary>
     public EntityBuilder<T> Ignore<TProperty>(Expression<Func<T, TProperty>> property)
     {
         Ignored.Add(PropertyNames(property).Single());

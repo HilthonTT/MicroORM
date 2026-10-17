@@ -1,4 +1,4 @@
-﻿using MicroORM.Mapping;
+using MicroORM.Mapping;
 using MicroORM.TypeHandlers;
 using System.Collections.Concurrent;
 using System.Data.Common;
@@ -9,13 +9,13 @@ namespace MicroORM.Materialization;
 
 internal sealed class Materializer
 {
-    private static readonly MethodInfo GetValueMethod = 
+    private static readonly MethodInfo GetValueMethod =
         typeof(DbDataReader).GetMethod(nameof(DbDataReader.GetValue), [typeof(int)])!;
 
-    private static readonly MethodInfo ToMethod = 
+    private static readonly MethodInfo ToMethod =
         typeof(ValueConverter).GetMethod(nameof(ValueConverter.To))!;
 
-    private static readonly MethodInfo ReadWithMethod = 
+    private static readonly MethodInfo ReadWithMethod =
         typeof(TypeHandlerRegistry).GetMethod(nameof(TypeHandlerRegistry.ReadWith))!;
 
     private readonly ConcurrentDictionary<(Type Type, int Start, string Layout), Delegate> _cache = new();
@@ -44,6 +44,39 @@ internal sealed class Materializer
 
         var layout = string.Join('\u001f', names);
         return (Func<DbDataReader, T>)_cache.GetOrAdd((typeof(T), start, layout), _ => Build<T>(names, start));
+    }
+
+    /// <summary>
+    /// Gets a reader that splits each row into <paramref name="types"/>.Length objects at the
+    /// <paramref name="splitOn"/> columns and combines them with <paramref name="map"/>.
+    /// </summary>
+    public Func<DbDataReader, TResult> ForSplit<TResult>(DbDataReader reader, Type[] types, string splitOn, Func<object?[], TResult> map)
+    {
+        int[] bounds = SplitPoints(reader, types.Length, splitOn);
+        var readers = new Func<DbDataReader, object?>[types.Length];
+        for (int i = 0; i < types.Length; i++)
+        {
+            int start = bounds[i];
+            int count = (i + 1 < types.Length ? bounds[i + 1] : reader.FieldCount) - start;
+            object? typed = typeof(Materializer).GetMethod(nameof(Boxed), BindingFlags.NonPublic | BindingFlags.Instance)!
+                .MakeGenericMethod(types[i])
+                .Invoke(this, [reader, start, count]);
+            var read = (Func<DbDataReader, object?>)typed!;
+
+            // A NULL first column means an unmatched outer join: the object is null, not empty.
+            readers[i] = i == 0 ? read : r => r.IsDBNull(start) ? null : read(r);
+        }
+
+        return r =>
+        {
+            var parts = new object?[readers.Length];
+            for (int i = 0; i < readers.Length; i++)
+            {
+                parts[i] = readers[i](r);
+            }
+
+            return map(parts);
+        };
     }
 
     private Func<DbDataReader, object?> Boxed<T>(DbDataReader reader, int start, int count)
@@ -159,7 +192,7 @@ internal sealed class Materializer
     private static (ConstructorInfo Constructor, int[] Ordinals) ChooseConstructor(Type type, Func<string, int?> ordinalOf)
     {
         var constructors = type.GetConstructors(BindingFlags.Public | BindingFlags.Instance);
-        if (constructors.First(c => c.GetParameters().Length == 0) is { } parameterless)
+        if (constructors.FirstOrDefault(c => c.GetParameters().Length == 0) is { } parameterless)
         {
             return (parameterless, []);
         }
