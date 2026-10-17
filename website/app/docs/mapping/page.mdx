@@ -1,3 +1,5 @@
+export const metadata = { title: "Mapping" };
+
 # Mapping
 
 MicroORM maps a class to a table and its properties to columns. For each setting, the first of
@@ -65,7 +67,7 @@ public class Invoice
 | `[Table(name, Schema = ...)]` | Table name and optional schema |
 | `[Column(name)]` | Column name |
 | `[Key]` | Primary key. Several `[Key]` properties make a composite key, ordered by `[Column(Order = n)]` |
-| `[ConcurrencyCheck]` | An `int` or `long` optimistic concurrency version (see [Concurrency](crud-and-transactions.md#optimistic-concurrency)) |
+| `[ConcurrencyCheck]` | An `int` or `long` optimistic concurrency version (see [Concurrency](/docs/crud-and-transactions/#optimistic-concurrency)) |
 | `[Timestamp]` | A SQL Server `rowversion`: read, never written |
 | `[DatabaseGenerated(Identity)]` | Generated on insert; read back after `InsertAsync` |
 | `[DatabaseGenerated(Computed)]` | Never written by insert or update |
@@ -122,7 +124,7 @@ await db.Table<OrderLine>().DeleteByKeyAsync((orderId, 2));
 ## Custom types
 
 Value objects, strongly typed IDs, JSON documents and enums stored as text are mapped through
-[type handlers](type-handlers.md).
+[type handlers](/docs/type-handlers/).
 
 ## Limitations
 

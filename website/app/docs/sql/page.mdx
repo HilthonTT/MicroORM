@@ -1,3 +1,5 @@
+export const metadata = { title: "Interpolated SQL" };
+
 # Interpolated SQL
 
 Every MicroORM method that takes SQL takes a `Sql`, not a `string`. `Sql` is a C#
@@ -79,7 +81,7 @@ Console.WriteLine(rendered.Text);
 foreach (var p in rendered.Parameters) Console.WriteLine($"{p.Name} = {p.Value}");
 ```
 
-To see every executed command, set `MicroOptions.Log` (see [CRUD and transactions](crud-and-transactions.md#logging)).
+To see every executed command, set `MicroOptions.Log` (see [CRUD and transactions](/docs/crud-and-transactions/#logging)).
 
 ## Running SQL
 

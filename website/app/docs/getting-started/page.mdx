@@ -1,11 +1,15 @@
+export const metadata = { title: "Getting started" };
+
 # Getting started
 
 ## 1. Install
 
-Add MicroORM and the ADO.NET provider for your database:
+MicroORM isn't published as a package. Clone the repository, reference the project from yours,
+and add the ADO.NET provider for your database:
 
 ```shell
-dotnet add package MicroORM
+git clone https://github.com/HilthonTT/MicroORM.git
+dotnet add reference MicroORM/src/MicroORM/MicroORM.csproj
 dotnet add package Npgsql                     # PostgreSQL
 # or: Microsoft.Data.Sqlite, Microsoft.Data.SqlClient, MySqlConnector
 ```
@@ -76,7 +80,7 @@ public class Customer
 }
 ```
 
-See [Mapping](mapping.md) to change table or column names, keys, and generated columns.
+See [Mapping](/docs/mapping/) to change table or column names, keys, and generated columns.
 
 ## 4. Query and write
 
@@ -95,6 +99,6 @@ var rows = await db.QueryAsync<Customer>($"SELECT * FROM customer WHERE email LI
 
 ## Next steps
 
-- [Interpolated SQL](sql.md): composing SQL safely
-- [Querying](querying.md): what translates, paging, set-based updates
-- [CRUD and transactions](crud-and-transactions.md)
+- [Interpolated SQL](/docs/sql/): composing SQL safely
+- [Querying](/docs/querying/): what translates, paging, set-based updates
+- [CRUD and transactions](/docs/crud-and-transactions/)

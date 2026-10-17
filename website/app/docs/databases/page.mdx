@@ -1,3 +1,5 @@
+export const metadata = { title: "Databases" };
+
 # Databases
 
 MicroORM has no dependency on any database driver. A `SqlDialect` tells it how to quote identifiers,
@@ -21,7 +23,7 @@ page results, return generated keys, concatenate strings and measure string leng
   if you need to sort or compare it in SQL.
 - A named in-memory database (`Mode=Memory;Cache=Shared`) disappears when its last connection
   closes. MicroORM opens a connection per operation, so keep one connection open for the database's
-  lifetime, as the [sample](../samples/MicroORM.Samples.QuickStart/Program.cs) does.
+  lifetime, as the [sample](https://github.com/HilthonTT/MicroORM/blob/main/samples/MicroORM.Samples.QuickStart/Program.cs) does.
 
 ## PostgreSQL
 

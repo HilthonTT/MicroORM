@@ -10,5 +10,5 @@
 
 - [ ] Tests added or updated
 - [ ] `dotnet format MicroORM.slnx --verify-no-changes` passes
-- [ ] Docs updated (`README.md` / `docs/`) for user-facing changes
+- [ ] Docs updated (`README.md` / `website/`) for user-facing changes
 - [ ] `CHANGELOG.md` updated under **Unreleased**

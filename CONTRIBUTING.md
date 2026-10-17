@@ -17,16 +17,16 @@ Thanks for helping. This guide covers setup, conventions and the release process
 ## Repository layout
 
 ```
-├── src/MicroORM/                       The library (the only packed project)
-├── tests/MicroORM.Tests/               Unit tests + integration tests (Integration/)
-├── samples/MicroORM.Samples.QuickStart Runnable example
-├── benchmarks/MicroORM.Benchmarks      BenchmarkDotNet comparison with Dapper
-├── docs/                           User and contributor documentation
-├── assets/                         Logo (SVG source + PNG package icon)
-├── .github/                        CI/CD workflows, issue and PR templates, Dependabot
-├── MicroORM.slnx                       Solution
-├── Directory.Build.props           Shared build settings and package metadata
-└── Directory.Packages.props        Central package versions
+├── src/MicroORM/                        The library (the only packed project)
+├── tests/MicroORM.Tests/                Unit tests + integration tests (Integration/)
+├── samples/MicroORM.Samples.QuickStart  Runnable example
+├── benchmarks/MicroORM.Benchmarks       BenchmarkDotNet comparison with Dapper
+├── website/                             Documentation site (Next.js, deployed to GitHub Pages)
+├── assets/                              Logo (SVG source + PNG package icon)
+├── .github/                             CI/CD workflows, issue and PR templates, Dependabot
+├── MicroORM.slnx                        Solution
+├── Directory.Build.props                Shared build settings and package metadata
+└── Directory.Packages.props             Central package versions
 ```
 
 ## Build and test
@@ -90,10 +90,23 @@ Any change to SQL generation must pass on all four databases. CI runs them on ev
 - Prefer throwing a clear exception over guessing. Error messages should say what to do next.
 - One type per file, named after the type. Folders group files by responsibility.
 - Every public operation needs an `...Async` and a synchronous form, both calling one
-  `...Core(bool async, ...)` implementation (see [docs/architecture.md](docs/architecture.md)).
+  `...Core(bool async, ...)` implementation (see [Architecture](https://hilthontt.github.io/MicroORM/docs/architecture/)).
 - Name tests as behavior sentences: `Null_comparisons_use_is_null`.
-- Performance-sensitive changes: run the benchmarks before and after (see [docs/benchmarks.md](docs/benchmarks.md)).
-- See [docs/architecture.md](docs/architecture.md) for how the pieces fit together.
+- Performance-sensitive changes: run the benchmarks before and after (see [Benchmarks](https://hilthontt.github.io/MicroORM/docs/benchmarks/)).
+- See [Architecture](https://hilthontt.github.io/MicroORM/docs/architecture/) for how the pieces fit together.
+
+## Documentation site
+
+The documentation lives in `website/`, a Next.js site with one MDX page per guide in
+`website/app/docs/<page>/page.mdx`. Update it together with user-facing changes:
+
+```shell
+cd website
+npm install
+npm run dev        # http://localhost:3000
+```
+
+Pushing to `main` deploys it to GitHub Pages.
 
 ## Pull requests
 

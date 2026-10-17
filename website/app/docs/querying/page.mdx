@@ -1,3 +1,5 @@
+export const metadata = { title: "Querying" };
+
 # Querying
 
 `db.Table<T>()` returns a `Table<T>`, which is also a `Query<T>`. Queries are **immutable**:
@@ -136,7 +138,7 @@ become `CASE WHEN ... THEN 1 ELSE 0 END`, because SQL Server doesn't allow a bar
 `SELECT` list.
 
 For joins, grouping and other shapes a single table can't express, write the SQL and materialize
-into a record (see also [Joins and result sets](joins-and-result-sets.md)):
+into a record (see also [Joins and result sets](/docs/joins-and-result-sets/)):
 
 ```csharp
 public record CustomerTotal(int Id, string Name, decimal Spend);

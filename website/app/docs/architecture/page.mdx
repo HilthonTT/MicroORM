@@ -1,3 +1,5 @@
+export const metadata = { title: "Architecture" };
+
 # Architecture
 
 This page is for contributors. It explains how a call flows through MicroORM and where each
@@ -88,4 +90,4 @@ Materializer.For<T>(reader)           compiled Func<DbDataReader, T>, cached per
 2. If the SQL differs by database, add a virtual member to `SqlDialect` and override it in `Dialects.cs`.
 3. Add a SQL-shape test in `QueryTranslationTests` and a behavior test in `Integration/ProviderTests`
    so it runs against all four databases in CI.
-4. Document it in the table in [querying.md](querying.md#what-translates).
+4. Document it in the table in [querying.md](/docs/querying/#what-translates).

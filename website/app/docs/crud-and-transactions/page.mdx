@@ -1,3 +1,5 @@
+export const metadata = { title: "CRUD and transactions" };
+
 # CRUD and transactions
 
 Every operation on this page has an `...Async` form and a synchronous form (`InsertAsync` /
@@ -11,7 +13,7 @@ Every operation on this page has an `...Async` form and a synchronous form (`Ins
 | `InsertManyAsync(entities)` | Inserts in order. Outside a transaction, the batch runs in its own transaction (all-or-nothing). Returns the count. |
 | `UpdateAsync(entity)` | Writes every non-key, non-generated column, matched by key. Returns `true` if a row matched. |
 | `DeleteAsync(entity)` | Deletes by key. Returns `true` if a row was deleted. |
-| `DeleteByKeyAsync(key)` | Deletes by key value; pass a tuple for a [composite key](mapping.md#composite-keys). |
+| `DeleteByKeyAsync(key)` | Deletes by key value; pass a tuple for a [composite key](/docs/mapping/#composite-keys). |
 | `FindAsync(key)` | Returns the entity with that key, or `null`; pass a tuple for a composite key. |
 | `UpsertAsync(entity, on?)` | Inserts, or updates the existing row, in one atomic statement. See [Upsert](#upsert). |
 
@@ -37,7 +39,7 @@ How each database returns a generated key:
 | MySQL | `INSERT ...; SELECT LAST_INSERT_ID()` |
 
 `UpdateAsync` writes **all** updatable columns. MicroORM doesn't track changes. To update a few
-columns without loading the entity, use `ExecuteUpdateAsync` (see [Querying](querying.md#set-based-operations)).
+columns without loading the entity, use `ExecuteUpdateAsync` (see [Querying](/docs/querying/#set-based-operations)).
 
 ## Upsert
 

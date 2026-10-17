@@ -1,0 +1,93 @@
+export const metadata = { title: "Introduction" };
+
+# Introduction
+
+MicroORM is a small, provider-agnostic ORM for .NET 10. It turns rows into objects and objects back
+into rows. You write SQL where SQL is the best tool, typed queries where they're clearer, and every
+value you pass is a parameter.
+
+```csharp
+var db = new MicroDb(SqlDialect.PostgreSql, dataSource, new() { Naming = NamingConvention.SnakeCase });
+
+// Interpolated SQL: every {hole} becomes a parameter. Plain strings don't compile.
+var recent = await db.QueryAsync<Order>($"SELECT * FROM orders WHERE placed_at > {since} AND status IN {statuses}");
+
+// Typed queries translated to SQL, never silently run in memory.
+var vips = await db.Table<Customer>()
+    .Where(c => c.Active && c.LifetimeSpend > 10_000 && c.Email.EndsWith("@example.com"))
+    .OrderByDescending(c => c.LifetimeSpend)
+    .Take(20)
+    .ToListAsync();
+
+// CRUD with generated keys read back.
+await db.Table<Customer>().InsertAsync(customer);   // customer.Id is now set
+
+// Set-based updates in one statement.
+await db.Table<Customer>().Where(c => c.LastSeen < cutoff).ExecuteUpdateAsync(s => s.Set(c => c.Active, false));
+
+// Projections and aggregates.
+var names = await db.Table<Customer>().Where(c => c.Active).Select(c => new { c.Id, c.Name }).ToListAsync();
+var revenue = await db.Table<Order>().Where(o => o.Paid).SumAsync(o => o.Total);
+
+// Joins split into objects, and atomic upserts.
+var rows = await db.QueryAsync<Order, Customer, (Order, Customer?)>(
+    $"SELECT o.id, o.total, c.id, c.name FROM orders o LEFT JOIN customers c ON c.id = o.customer_id",
+    (o, c) => (o, c));
+await db.Table<Customer>().UpsertAsync(customer, on: c => c.Email);
+
+// Every API also has a synchronous twin.
+var count = db.Table<Customer>().Count();
+```
+
+## Why MicroORM?
+
+MicroORM sits between a micro-ORM and a full ORM. It takes ideas from the libraries it learned
+from and adds a few of its own:
+
+| | Dapper | Massive | EF Core | **MicroORM** |
+|---|---|---|---|---|
+| Raw SQL, mapped to objects | ✅ | ✅ | ✅ | ✅ |
+| SQL injection blocked by the type system | — | — | ✅ (`FromSql`) | ✅ **every API** |
+| Typed LINQ-style queries, projections, aggregates | — | — | ✅ | ✅ (a focused subset) |
+| Unsupported query → exception, not client eval | n/a | n/a | ✅ | ✅ |
+| CRUD without writing SQL | — | ✅ | ✅ | ✅ |
+| Composite keys and optimistic concurrency | — | — | ✅ | ✅ |
+| Atomic upsert | — | — | — | ✅ |
+| Multi-mapping joins, multiple result sets | ✅ | — | — | ✅ |
+| Custom type handlers (value objects, JSON) | ✅ | — | ✅ | ✅ |
+| Stored procedures with output parameters | ✅ | ✅ | ✅ (raw SQL) | ✅ |
+| Sync and async APIs | ✅ | ✅ | ✅ | ✅ |
+| Change tracking, migrations, navigation loading | — | — | ✅ | — *by design* |
+| Dynamic rows | ✅ | ✅ | — | ✅ |
+| Dependencies | none | none | many | **none** |
+
+On reading rows, MicroORM keeps pace with Dapper: 500 rows take the same time and memory. See
+[the benchmarks](/docs/benchmarks/).
+
+## MicroORM's own ideas
+
+- **`Sql` is an interpolated string handler.** Query methods take `Sql`, not `string`, so `$"... {value}"` is always parameterized and string concatenation doesn't compile. Fragments compose (`$"... WHERE {filter}"`) and collections expand to `IN` lists.
+- **One model of a session.** `MicroDb` opens a pooled connection per operation. `MicroTransaction` has the *same* API and runs everything on one connection. Code written against `MicroSession` works either way.
+- **Honest translation.** The query translator supports a deliberately small, documented subset. Anything else throws with a message that points you to `.Where($"...")`.
+- **Dialect objects, not provider references.** MicroORM references no database driver. You choose the provider and pass a `SqlDialect`.
+
+## Supported databases
+
+| Database | Dialect | Tested with |
+|---|---|---|
+| SQLite | `SqlDialect.Sqlite` | Microsoft.Data.Sqlite |
+| PostgreSQL | `SqlDialect.PostgreSql` | Npgsql, PostgreSQL 17 |
+| SQL Server / Azure SQL | `SqlDialect.SqlServer` | Microsoft.Data.SqlClient, SQL Server 2022 |
+| MySQL / MariaDB | `SqlDialect.MySql` | MySqlConnector, MySQL 8.4 |
+
+CI runs the full integration suite against every database on every push. Per-dialect behavior is
+described in [Databases](/docs/databases/).
+
+## Acknowledgements
+
+MicroORM was inspired by [Dapper](https://github.com/DapperLib/Dapper) (fast, honest mapping),
+[Massive](https://github.com/FransBouma/Massive) (dynamic rows and tiny surface area) and
+[Entity Framework Core](https://github.com/dotnet/efcore) (typed queries and conventions).
+It shares no code with any of them.
+
+Ready? Head to [getting started](/docs/getting-started/).
