@@ -1,0 +1,242 @@
+﻿using MicroORM.Dialects;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Collections;
+
+namespace MicroORM.Sql;
+
+/// <summary>
+/// A composable, injection-safe SQL fragment.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="Sql"/> is an interpolated string handler: every hole in <c>$"..."</c> becomes a
+/// database parameter instead of being spliced into the text. Plain strings do not convert to
+/// <see cref="Sql"/>, so building SQL by string concatenation is a compile error rather than a
+/// security bug.
+/// </para>
+/// <code>
+/// var minAge = 18;
+/// var ids = new[] { 1, 2, 3 };
+/// await db.QueryAsync&lt;User&gt;($"SELECT * FROM users WHERE age &gt;= {minAge} AND id IN {ids}");
+/// // SELECT * FROM users WHERE age &gt;= @p0 AND id IN (@p1, @p2, @p3)
+/// </code>
+/// <para>
+/// Holes of type <see cref="Sql"/> are inlined as fragments, so queries compose without losing
+/// parameterization. Collections (other than <see cref="string"/> and <c>byte[]</c>) expand to a
+/// parenthesized parameter list for use with <c>IN</c>.
+/// </para>
+/// </remarks>
+[InterpolatedStringHandler]
+public sealed class Sql
+{
+    private readonly List<object> _parts;
+
+    public Sql(int literalLength, int formattedCount)
+    {
+        _parts = new List<object>((formattedCount * 2) + 1);
+    }
+
+    private Sql()
+    {
+        _parts = [];
+    }
+
+    public static Sql Empty => new();
+
+    public bool IsEmpty => _parts.Count == 0;
+
+    public void AppendLiteral(string literal)
+    {
+        if (literal.Length > 0)
+        {
+            _parts.Add(literal);
+        }
+    }
+
+    public void AppendFormatted(Sql? fragment)
+    {
+        if (fragment is not null)
+        {
+            _parts.Add(fragment);
+        }
+    }
+
+    public void AppendFormatted<T>(T value) => AddValue(value, typeof(T));
+
+    public static Sql Raw(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text, nameof(text));
+        var sql = new Sql();
+        sql.AppendLiteral(text);
+        return sql;
+    }
+
+    public static Sql Param(object? value)
+    {
+        var sql = new Sql();
+        sql._parts.Add(new ParameterPart(value, value?.GetType() ?? typeof(object)));
+        return sql;
+    }
+
+    public static Sql Identifier(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
+        var sql = new Sql();
+        sql._parts.Add(new IdentifierPart(name));
+        return sql;
+    }
+
+    public static Sql Join(string separator, IEnumerable<Sql> fragments)
+    {
+        ArgumentNullException.ThrowIfNull(fragments, nameof(fragments));
+        var sql = new Sql();
+        bool first = true;
+
+        foreach (Sql fragment in fragments)
+        {
+            if (fragment.IsEmpty)
+            {
+                continue;
+            }
+
+            if (!first)
+            {
+                sql.AppendLiteral(separator);
+            }
+            sql.Append(fragment);
+            first = false;
+        }
+
+        return sql;
+    }
+
+    /// <summary>Concatenates two fragments.</summary>
+    public static Sql operator +(Sql left, Sql right)
+    {
+        ArgumentNullException.ThrowIfNull(left, nameof(left));
+        ArgumentNullException.ThrowIfNull(right, nameof(right));
+        var sql = new Sql();
+        sql._parts.Add(left);
+        sql._parts.Add(right);
+        return sql;
+    }
+
+    public static Sql Add(Sql left, Sql right) => left + right;
+
+    internal Sql Append(string literal)
+    {
+        AppendLiteral(literal);
+        return this;
+    }
+
+    internal Sql Append(Sql fragment)
+    {
+        _parts.Add(fragment);
+        return this;
+    }
+
+    internal Sql AppendIdentifier(string name)
+    {
+        _parts.Add(new IdentifierPart(name));
+        return this;
+    }
+
+    internal Sql AppendParameter(object? value, Type? clrType)
+    {
+        _parts.Add(new ParameterPart(value, clrType));
+        return this;
+    }
+
+
+    internal Sql AppendList(IEnumerable values)
+    {
+        _parts.Add(new ListPart(values));
+        return this;
+    }
+
+    /// <summary>Renders the SQL text and parameters for a dialect.</summary>
+    public RenderedSql Render(SqlDialect dialect)
+    {
+        ArgumentNullException.ThrowIfNull(dialect, nameof(dialect));
+
+        var text = new StringBuilder();
+        var parameters = new List<SqlParameterValue>();
+        Render(dialect, text, parameters);
+
+        return new RenderedSql(text.ToString(), parameters);
+    }
+
+    private void AddValue(object? value, Type declaredType)
+    {
+        switch (value)
+        {
+            case Sql fragment:
+                _parts.Add(fragment);
+                break;
+            case IEnumerable values when value is not string and not byte[]:
+                _parts.Add(new ListPart(values));
+                break;
+            default:
+                _parts.Add(new ParameterPart(value, declaredType));
+                break;
+        }
+    }
+
+    private void Render(SqlDialect dialect, StringBuilder text, List<SqlParameterValue> parameters)
+    {
+        foreach (object part in _parts)
+        {
+            switch (part)
+            {
+                case string literal:
+                    text.Append(literal);
+                    break;
+                case Sql nested:
+                    nested.Render(dialect, text, parameters);
+                    break;
+                case IdentifierPart identifier:
+                    text.Append(dialect.QuoteIdentifier(identifier.Name));
+                    break;
+                case ParameterPart parameter:
+                    AppendParameter(dialect, text, parameters, parameter.Value, parameter.ClrType);
+                    break;
+                case ListPart list:
+                    text.Append('(');
+
+                    bool any = false;
+                    foreach (object item in list.Values)
+                    {
+                        if (any)
+                        {
+                            text.Append(", ");
+                        }
+
+                        AppendParameter(dialect, text, parameters, item, item?.GetType());
+                        any = true;
+                    }
+
+                    // "x IN (NULL)" matches nothing, which is the meaning of an empty IN list.
+                    text.Append(any ? ")" : "NULL)");
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    private static void AppendParameter(
+        SqlDialect dialect, 
+        StringBuilder text, 
+        List<SqlParameterValue> parameters, 
+        object? value, 
+        Type? clrType)
+    {
+        string name = dialect.ParameterName(parameters.Count);
+        text.Append(name);
+        parameters.Add(new SqlParameterValue(name, value, clrType));
+    }
+
+    /// <summary>Renders the fragment for debugging, using SQLite syntax.</summary>
+    public override string ToString() => Render(SqlDialect.Sqlite).Text;
+}
