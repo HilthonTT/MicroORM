@@ -17,6 +17,14 @@ internal sealed class SqlServerDialect : SqlDialect
     public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>
         Sql.Sql.Empty.Append("(").Append(left).Append(" + ").Append(right).Append(")");
 
+    public override Sql.Sql DatePart(DatePart part, Sql.Sql value) =>
+        Sql.Sql.Empty.Append("DATEPART(" + part.ToString().ToLowerInvariant() + ", ").Append(value).Append(")");
+
+    // SUBSTRING requires a length; the size in bytes is never less than the length in characters.
+    public override Sql.Sql Substring(Sql.Sql value, Sql.Sql start, Sql.Sql? length) =>
+        Sql.Sql.Empty.Append("SUBSTRING(").Append(value).Append(", ").Append(start).Append(", ")
+            .Append(length ?? Sql.Sql.Empty.Append("DATALENGTH(").Append(value).Append(")")).Append(")");
+
     public override void ConfigureParameter(DbParameter parameter, SqlParameterValue value)
     {
         ArgumentNullException.ThrowIfNull(parameter);

@@ -36,6 +36,29 @@ public class QueryTests
 
     [Theory]
     [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Functions_translate_with_the_same_results_everywhere(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        var people = database.Db.Table<Person>();
+
+        static async Task<string[]> Names(Query<Person> query) => [.. (await query.OrderBy(p => p.Name).ToListAsync()).Select(p => p.Name)];
+
+        Assert.Equal(["Ada", "Dmitri"], await Names(people.Where(p => p.Name.Substring(1, 1) == "d" || p.Name.Substring(2) == "itri")));
+        Assert.Equal(["50% Eve_"], await Names(people.Where(p => p.Name.Replace("% ", "-") == "50-Eve_")));
+        Assert.Equal(["50% Eve_", "Brendan", "Dmitri"], await Names(people.Where(p => string.IsNullOrWhiteSpace(p.Email))));
+        Assert.Equal(["Ada"], await Names(people.Where(p => SqlFunctions.Like(p.Email, "a%@example.___"))));
+        Assert.Equal(["Ada", "Dmitri"], await Names(people.Where(p => Math.Abs(p.Age - 32) <= 4)));
+        Assert.Equal(["Ada"], await Names(people.Where(p => Math.Floor(p.Age / 10.0) == 3 && Math.Ceiling(p.Age / 10.0) == 4)));
+
+        // Seed.Now is 2026-10-16 08:30:15.
+        Assert.Equal(5, await people.Where(p =>
+            p.CreatedAt.Year == 2026 && p.CreatedAt.Month == 10 && p.CreatedAt.Day == 16 &&
+            p.CreatedAt.Hour == 8 && p.CreatedAt.Minute == 30 && p.CreatedAt.Second == 15).CountAsync());
+        Assert.Equal([2026], (await people.Select(p => p.CreatedAt.Year).ToListAsync()).Distinct());
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
     public async Task Filters_and_limits_behave_like_linq(string provider)
     {
         await using var database = await PeopleAsync(provider);

@@ -62,6 +62,17 @@ public abstract class SqlDialect
     /// <summary>Concatenates two string expressions.</summary>
     public virtual SQL Concat(SQL left, SQL right) => SQL.Empty.Append("(").Append(left).Append(" || ").Append(right).Append(")");
 
+    /// <summary>Extracts a part of a date or time expression as an integer.</summary>
+    public virtual SQL DatePart(DatePart part, SQL value) =>
+        SQL.Empty.Append("EXTRACT(" + part.ToString().ToUpperInvariant() + " FROM ").Append(value).Append(")");
+
+    /// <summary>Takes part of a string; <paramref name="start"/> is 1-based and <paramref name="length"/> is optional.</summary>
+    public virtual SQL Substring(SQL value, SQL start, SQL? length)
+    {
+        var sql = SQL.Empty.Append("SUBSTR(").Append(value).Append(", ").Append(start);
+        return (length is null ? sql : sql.Append(", ").Append(length)).Append(")");
+    }
+
     /// <summary>Appends a paging clause to a <c>SELECT</c> statement.</summary>
     /// <param name="sql">The statement to append to.</param>
     /// <param name="skip">Rows to skip, if any.</param>

@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Typed queries translate more expressions: `DateTime` and `DateOnly` `Year`/`Month`/`Day` (and `Hour`/`Minute`/`Second` for `DateTime`), `Math.Abs`/`Floor`/`Ceiling`, string `Substring`, `Replace`, `TrimStart`, `TrimEnd` and `string.IsNullOrWhiteSpace`.
+- `SqlFunctions.Like(value, pattern)` for `LIKE` patterns with your own wildcards.
+- `SqlDialect.DatePart` and `SqlDialect.Substring` for dialects to override.
+
 ### Security
 
 - `Where(Sql)` conditions are now parenthesized, so an `OR` in a raw condition can no longer escape the `AND` that joins it to other filters (for example a tenant filter).

@@ -64,9 +64,15 @@ subset, use `Where($"...")`.
 | `a ?? b` | `COALESCE(a, b)` |
 | `c.Active` (a `bool` column on its own) | `active = TRUE` (as a parameter) |
 | `s.StartsWith(v)`, `s.EndsWith(v)`, `s.Contains(v)` | `LIKE` with `%`, `_`, `[` and `!` escaped |
-| `s.ToUpper()`, `s.ToLower()`, `s.Trim()` | `UPPER`, `LOWER`, `TRIM` |
+| `s.ToUpper()`, `s.ToLower()`, `s.Trim()`, `s.TrimStart()`, `s.TrimEnd()` | `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM` |
 | `s.Length` | `LENGTH`, `LEN` or `CHAR_LENGTH` |
+| `s.Substring(i)`, `s.Substring(i, n)` | `SUBSTR(s, i + 1, n)` (`SUBSTRING` in SQL Server) |
+| `s.Replace(a, b)` | `REPLACE(s, a, b)` |
 | `string.IsNullOrEmpty(s)` | `(s IS NULL OR s = '')` |
+| `string.IsNullOrWhiteSpace(s)` | `(s IS NULL OR TRIM(s) = '')` |
+| `SqlFunctions.Like(s, pattern)` | `s LIKE pattern`, with `%` and `_` as wildcards (not escaped) |
+| `d.Year`, `Month`, `Day`, `Hour`, `Minute`, `Second` on `DateTime` (and the date parts of `DateOnly`) | `EXTRACT`, `DATEPART` or `strftime` |
+| `Math.Abs(x)`, `Math.Floor(x)`, `Math.Ceiling(x)` | `ABS`, `FLOOR`, `CEILING` |
 | `list.Contains(c.X)`, `array.Contains(c.X)` | `X IN (@p0, @p1, ...)` |
 | Captured variables, constants, method calls that don't use the row | evaluated in .NET and sent as parameters |
 
@@ -82,6 +88,11 @@ Notes:
 - `LIKE` case sensitivity follows the database: case-sensitive in PostgreSQL,
   case-insensitive for ASCII in SQLite, and set by the collation in SQL Server and MySQL.
 - Only mapped properties can appear in a query. Computed C# properties throw.
+- `Substring` past the end of the string returns the shorter result instead of throwing, as SQL does.
+- Date parts of a PostgreSQL `timestamptz` use the session's time zone. MicroORM doesn't translate
+  `DateTimeOffset` members, because databases disagree on which offset the parts are in.
+- `Math.Round` isn't translated: databases round halves differently from .NET, and from each other.
+  Use `Where($"ROUND(price, 2) = {value}")` and pick the behaviour you want.
 - Sorting by an expression works too: `OrderBy(u => u.Name.ToLower())`.
 
 ## Raw conditions

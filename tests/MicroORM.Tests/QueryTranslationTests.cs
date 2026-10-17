@@ -86,6 +86,53 @@ public class QueryTranslationTests
     }
 
     [Fact]
+    public void More_string_methods_translate()
+    {
+        Assert.Equal("(LTRIM(\"name\") = @p0)", Where(p => p.Name.TrimStart() == "x"));
+        Assert.Equal("(RTRIM(\"name\") = @p0)", Where(p => p.Name.TrimEnd() == "x"));
+        Assert.Equal("(REPLACE(\"name\", @p0, @p1) = @p2)", Where(p => p.Name.Replace('-', ' ') == "x"));
+        Assert.Equal("(\"email\" IS NULL OR TRIM(\"email\") = '')", Where(p => string.IsNullOrWhiteSpace(p.Email)));
+        Assert.Equal("(SUBSTR(\"name\", (\"age\" + 1)) = @p0)", Where(p => p.Name.Substring(p.Age) == "x"));
+
+        var query = People.Where(p => p.Name.Substring(1, 2) == "da").ToSql().Render(SqlDialect.Sqlite);
+        Assert.EndsWith("(SUBSTR(\"name\", @p0, @p1) = @p2)", query.Text, StringComparison.Ordinal);
+        Assert.Equal(2, query.Parameters[0].Value);
+
+        var sqlServer = new MicroDb(SqlDialect.SqlServer, NoConnection).Table<Person>();
+        Assert.Contains("(SUBSTRING([Name], @p0, DATALENGTH([Name])) = @p1)", sqlServer.Where(p => p.Name.Substring(1) == "x").ToString(), StringComparison.Ordinal);
+        Assert.Equal(" ", People.Where(p => p.Name.Replace('-', ' ') == "x").ToSql().Render(SqlDialect.Sqlite).Parameters[1].Value);
+    }
+
+    [Fact]
+    public void Date_parts_follow_the_dialect()
+    {
+        Assert.Equal("(CAST(strftime('%Y', \"created_at\") AS INTEGER) = @p0)", Where(p => p.CreatedAt.Year == 2026));
+        Assert.Equal("(CAST(strftime('%M', \"created_at\") AS INTEGER) = @p0)", Where(p => p.CreatedAt.Minute == 30));
+
+        static string On(SqlDialect dialect) =>
+            new MicroDb(dialect, NoConnection).Table<Person>().Where(p => p.CreatedAt.Month == 10).ToSql().Render(dialect).Text.Split(" WHERE ")[1];
+
+        Assert.Equal("(CAST(FLOOR(EXTRACT(MONTH FROM \"CreatedAt\")) AS INTEGER) = @p0)", On(SqlDialect.PostgreSql));
+        Assert.Equal("(DATEPART(month, [CreatedAt]) = @p0)", On(SqlDialect.SqlServer));
+        Assert.Equal("(EXTRACT(MONTH FROM `CreatedAt`) = @p0)", On(SqlDialect.MySql));
+        Assert.Throws<NotSupportedException>(() => People.Where(p => p.CreatedAt.DayOfWeek == DayOfWeek.Monday));
+    }
+
+    [Fact]
+    public void Math_functions_and_like_translate()
+    {
+        Assert.Equal("(ABS((\"age\" - @p0)) < @p1)", Where(p => Math.Abs(p.Age - 30) < 5));
+        Assert.Equal("(FLOOR((\"age\" / @p0)) = @p1)", Where(p => Math.Floor(p.Age / 10.0) == 3));
+        Assert.Equal("(CEILING((\"age\" / @p0)) = @p1)", Where(p => Math.Ceiling(p.Age / 10.0) == 4));
+        Assert.Throws<NotSupportedException>(() => People.Where(p => Math.Round((double)p.Age) == 3));
+
+        var query = People.Where(p => SqlFunctions.Like(p.Email, "%@example.___")).ToSql().Render(SqlDialect.Sqlite);
+        Assert.EndsWith("(\"email\" LIKE @p0)", query.Text, StringComparison.Ordinal);
+        Assert.Equal("%@example.___", query.Parameters[0].Value);
+        Assert.Throws<InvalidOperationException>(() => SqlFunctions.Like("a", "a"));
+    }
+
+    [Fact]
     public void Collection_contains_becomes_in()
     {
         var ids = new[] { 1, 2, 3 };

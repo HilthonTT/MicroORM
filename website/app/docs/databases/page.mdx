@@ -13,6 +13,8 @@ page results, return generated keys, concatenate strings and measure string leng
 | Generated key | `RETURNING` | `RETURNING` | `SCOPE_IDENTITY()` | `LAST_INSERT_ID()` |
 | String concat | `\|\|` | `\|\|` | `+` | `CONCAT()` |
 | String length | `LENGTH` | `LENGTH` | `LEN` | `CHAR_LENGTH` |
+| Substring | `SUBSTR` | `SUBSTR` | `SUBSTRING` | `SUBSTR` |
+| Date parts | `strftime` | `EXTRACT` | `DATEPART` | `EXTRACT` |
 | Parameter prefix | `@` | `@` | `@` | `@` |
 
 ## SQLite
@@ -49,7 +51,7 @@ page results, return generated keys, concatenate strings and measure string leng
 ## Another database
 
 Subclass `SqlDialect`. Only `Name` and `QuotePart` are required; override `AppendPaging`,
-`Insert`, `Concat`, `LengthFunction`, `ParameterName` or `ConfigureParameter` where your
+`Insert`, `Concat`, `LengthFunction`, `DatePart`, `Substring`, `ParameterName` or `ConfigureParameter` where your
 database differs from the defaults (which follow PostgreSQL and SQLite).
 
 ```csharp

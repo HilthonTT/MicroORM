@@ -218,7 +218,33 @@ internal sealed class ExpressionTranslator
             return Sql.Sql.Empty.Append(_dialect.LengthFunction + "(").Append(Visit(node.Expression)).Append(")");
         }
 
+        if (node.Expression is not null && DatePartOf(node) is { } part)
+        {
+            return _dialect.DatePart(part, Visit(node.Expression));
+        }
+
         throw Unsupported(node);
+    }
+
+    private static DatePart? DatePartOf(MemberExpression node)
+    {
+        var type = node.Expression!.Type;
+        var isDate = type == typeof(DateOnly);
+        if (!isDate && type != typeof(DateTime))
+        {
+            return null;
+        }
+
+        return node.Member.Name switch
+        {
+            nameof(DateTime.Year) => DatePart.Year,
+            nameof(DateTime.Month) => DatePart.Month,
+            nameof(DateTime.Day) => DatePart.Day,
+            nameof(DateTime.Hour) when !isDate => DatePart.Hour,
+            nameof(DateTime.Minute) when !isDate => DatePart.Minute,
+            nameof(DateTime.Second) when !isDate => DatePart.Second,
+            _ => null,
+        };
     }
 
     private Sql.Sql VisitCall(MethodCallExpression node)
@@ -241,12 +267,46 @@ internal sealed class ExpressionTranslator
                     return Function("LOWER", node.Object!);
                 case nameof(string.Trim) when node.Arguments.Count == 0:
                     return Function("TRIM", node.Object!);
+                case nameof(string.TrimStart) when node.Arguments.Count == 0:
+                    return Function("LTRIM", node.Object!);
+                case nameof(string.TrimEnd) when node.Arguments.Count == 0:
+                    return Function("RTRIM", node.Object!);
+                case nameof(string.Substring) when node.Arguments.Count is 1 or 2:
+                    return _dialect.Substring(
+                        Visit(node.Object!),
+                        OneBased(node.Arguments[0]),
+                        node.Arguments.Count == 2 ? Visit(node.Arguments[1]) : null);
+                case nameof(string.Replace) when node.Arguments.Count == 2 && node.Arguments[0].Type == node.Arguments[1].Type:
+                    return Sql.Sql.Empty.Append("REPLACE(").Append(Visit(node.Object!)).Append(", ")
+                        .Append(Text(node.Arguments[0])).Append(", ").Append(Text(node.Arguments[1])).Append(")");
                 case nameof(string.IsNullOrEmpty):
                     var value = Visit(node.Arguments[0]);
                     return Sql.Sql.Empty.Append("(").Append(value).Append(" IS NULL OR ").Append(value).Append(" = '')");
+                case nameof(string.IsNullOrWhiteSpace):
+                    var text = Visit(node.Arguments[0]);
+                    return Sql.Sql.Empty.Append("(").Append(text).Append(" IS NULL OR TRIM(").Append(text).Append(") = '')");
                 case nameof(string.Equals) when node.Object is not null && node.Arguments.Count == 1:
                     return Sql.Sql.Empty.Append("(").Append(Visit(node.Object)).Append(" = ").Append(Visit(node.Arguments[0])).Append(")");
             }
+        }
+
+        // Math.Round is left out: databases round halves differently from .NET's default, and from each other.
+        if (method.DeclaringType == typeof(Math) && node.Arguments.Count == 1)
+        {
+            switch (method.Name)
+            {
+                case nameof(Math.Abs):
+                    return Function("ABS", node.Arguments[0]);
+                case nameof(Math.Floor):
+                    return Function("FLOOR", node.Arguments[0]);
+                case nameof(Math.Ceiling):
+                    return Function("CEILING", node.Arguments[0]);
+            }
+        }
+
+        if (method.DeclaringType == typeof(SqlFunctions) && method.Name == nameof(SqlFunctions.Like))
+        {
+            return Sql.Sql.Empty.Append("(").Append(Visit(node.Arguments[0])).Append(" LIKE ").Append(Visit(node.Arguments[1])).Append(")");
         }
 
         if (method.Name == "Contains" && TryGetCollectionContains(node, out var source, out var item))
@@ -277,6 +337,16 @@ internal sealed class ExpressionTranslator
 
     private Sql.Sql Function(string name, Expression argument) =>
         Sql.Sql.Empty.Append(name + "(").Append(Visit(argument)).Append(")");
+
+    /// <summary>Converts a .NET zero-based index to SQL's one-based position.</summary>
+    private Sql.Sql OneBased(Expression index) => DependsOnEntity(index)
+        ? Sql.Sql.Empty.Append("(").Append(Visit(index)).Append(" + 1)")
+        : Parameter((int)Evaluate(index)! + 1, typeof(int));
+
+    /// <summary>Translates a string or char argument, sending chars as one-character strings.</summary>
+    private Sql.Sql Text(Expression node) => DependsOnEntity(node) || node.Type != typeof(char)
+        ? Visit(node)
+        : Parameter(Evaluate(node)?.ToString(), typeof(string));
 
     private Sql.Sql Like(Expression target, Expression pattern, bool prefix, bool suffix)
     {
@@ -383,5 +453,5 @@ internal sealed class ExpressionTranslator
     }
 
     private static NotSupportedException Unsupported(Expression node) =>
-      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/Length, collection Contains. Use .Where($\"...\") for anything else.");
+      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains. Use .Where($\"...\") for anything else.");
 }
