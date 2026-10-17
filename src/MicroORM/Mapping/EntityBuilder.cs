@@ -53,11 +53,7 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
-    /// <summary>
-    /// Sets the primary key: one property (<c>x =&gt; x.Id</c>) or, for a composite key, an
-    /// anonymous type (<c>x =&gt; new { x.OrderId, x.LineNo }</c>). The generation applies to a
-    /// single-column key.
-    /// </summary>
+    /// <summary>Sets the column name of a property.</summary>
     public EntityBuilder<T> Column<TProperty>(Expression<Func<T, TProperty>> property, string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -65,21 +61,14 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
-    /// <summary>
-    /// Sets the primary key: one property (<c>x =&gt; x.Id</c>) or, for a composite key, an
-    /// anonymous type (<c>x =&gt; new { x.OrderId, x.LineNo }</c>). The generation applies to a
-    /// single-column key.
-    /// </summary>
+    /// <summary>Sets how the database generates a property's value.</summary>
     public EntityBuilder<T> Generated<TProperty>(Expression<Func<T, TProperty>> property, ValueGeneration generation)
     {
         Generation[PropertyNames(property).Single()] = generation;
         return this;
     }
 
-    /// <summary>
-    /// Marks an integer property as the optimistic concurrency version. Updates and deletes check
-    /// it and updates increment it.
-    /// </summary>
+    /// <summary>Excludes a property from the mapping.</summary>
     public EntityBuilder<T> Ignore<TProperty>(Expression<Func<T, TProperty>> property)
     {
         Ignored.Add(PropertyNames(property).Single());

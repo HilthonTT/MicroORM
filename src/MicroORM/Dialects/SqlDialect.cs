@@ -26,7 +26,7 @@ public abstract class SqlDialect
     /// <summary>Gets a display name for the dialect.</summary>
     public abstract string Name { get; }
 
-    /// <summary>Gets a display name for the dialect.</summary>
+    /// <summary>Quotes one part of an identifier, escaping quote characters inside it.</summary>
     protected abstract string QuotePart(string part);
 
     /// <summary>Quotes an identifier; dotted names (<c>schema.table</c>) are quoted per part.</summary>

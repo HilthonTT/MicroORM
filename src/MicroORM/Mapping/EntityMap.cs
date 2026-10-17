@@ -34,10 +34,10 @@ public sealed class EntityMap
     /// <summary>Gets the optimistic concurrency version column, if any.</summary>
     public ColumnMap? Version { get; }
 
-    /// <summary>Gets the optimistic concurrency version column, if any.</summary>
+    /// <summary>Gets the database-generated identity column, if any.</summary>
     public ColumnMap? Identity { get; }
 
-    /// <summary>Gets the optimistic concurrency version column, if any.</summary>
+    /// <summary>Gets the column mapped from a property, or <see langword="null"/> when it isn't mapped.</summary>
     public ColumnMap? FindByProperty(string propertyName) => _byProperty.GetValueOrDefault(propertyName);
 
     internal IReadOnlyList<ColumnMap> RequireKeys(string operation) => Keys.Count > 0 ? Keys : throw new InvalidOperationException(

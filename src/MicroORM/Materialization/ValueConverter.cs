@@ -14,14 +14,15 @@ public static class ValueConverter
     /// <summary>Converts a database value to <typeparamref name="T"/>; <see cref="DBNull"/> becomes default.</summary>
     public static T To<T>(object? value)
     {
-        if (value is T typed)
-        {
-            return typed;
-        }
-
+        // Before the type test, so To<object>(DBNull.Value) is null rather than DBNull.
         if (value is null or DBNull)
         {
             return default!;
+        }
+
+        if (value is T typed)
+        {
+            return typed;
         }
 
         // SQLite and MySQL return 64-bit integers for every integer column. Converting through

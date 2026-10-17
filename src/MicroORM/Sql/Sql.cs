@@ -67,7 +67,7 @@ public sealed class Sql
         }
     }
 
-    /// <summary>Appends a nested fragment verbatim (its own parameters are preserved).</summary>
+    /// <summary>Appends a value as a parameter, or a collection as a parameter list. Called by the compiler.</summary>
     public void AppendFormatted<T>(T value) => AddValue(value, typeof(T));
 
     /// <summary>

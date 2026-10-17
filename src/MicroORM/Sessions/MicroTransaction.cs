@@ -50,6 +50,11 @@ public sealed class MicroTransaction : MicroSession, IAsyncDisposable, IDisposab
     private async ValueTask CompleteCore(bool async, bool commit, CancellationToken cancellationToken)
     {
         ThrowIfCompleted();
+
+        // Completed even if this throws: a failed commit leaves most providers' transaction unusable,
+        // and a rollback on dispose would then throw and hide the real error. Disposing the provider
+        // transaction still rolls back anything left pending.
+        _completed = true;
         if (commit)
         {
             if (async)
@@ -69,8 +74,6 @@ public sealed class MicroTransaction : MicroSession, IAsyncDisposable, IDisposab
         {
             _transaction.Rollback();
         }
-
-        _completed = true;
     }
 
     private async ValueTask DisposeCore(bool async)

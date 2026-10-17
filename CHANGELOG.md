@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format follows
 - `list.Contains(x.Column)` matches `NULL` when the list contains `null`, as in C#.
 - The bitwise complement `~x` is rejected instead of being translated as a logical `NOT`.
 - The string `"0"` converts to `false`.
+- `Skip` and `Take` compose in call order, as in LINQ: `Take(10).Skip(5)` returns 5 rows (not 10), `Skip(2).Skip(3)` skips 5 and `Take(5).Take(10)` returns 5.
+- A failed `Commit` is no longer hidden by a second exception from the rollback on dispose.
+- Type handlers registered for a property's declared type (such as `AddJsonColumn<IReadOnlyList<string>>()`) now convert parameter values whose runtime type differs (a `List<string>`).
+- `[Key]` properties with `[Column]` but no `Order` sort after keys with an explicit `Order` instead of before them.
+- `ValueConverter.To<object>` and `Scalar<object>` return `null` for `DBNull`.
 
 ## [0.1.0] - 2026-10-16
 

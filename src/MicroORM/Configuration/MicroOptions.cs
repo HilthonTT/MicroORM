@@ -17,7 +17,7 @@ public sealed class MicroOptions
     /// <summary>Gets or sets the command timeout in seconds; <see langword="null"/> keeps the provider default.</summary>
     public int? CommandTimeout { get; set; }
 
-    /// <summary>Gets or sets the command timeout in seconds; <see langword="null"/> keeps the provider default.</summary>
+    /// <summary>Gets or sets a callback invoked after every command, with its SQL, parameters, duration and any error.</summary>
     public Action<CommandLog>? Log { get; set; }
 
     /// <summary>Overrides mapping for <typeparamref name="T"/> with a fluent builder.</summary>

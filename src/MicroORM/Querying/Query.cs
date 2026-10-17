@@ -75,18 +75,21 @@ public class Query<T>
     /// <summary>Adds a descending secondary sort key.</summary>
     public Query<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> key) => Order(key, descending: true, replace: false);
 
-    /// <summary>Skips a number of rows.</summary>
+    /// <summary>Skips a number of rows. Like LINQ, it applies after any earlier Skip or Take.</summary>
     public Query<T> Skip(int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        return new(Session, Map, _filters, _ordering, count, _take);
+
+        // Skipping within a page shrinks the page: Take(10).Skip(5) is 5 rows, not 10.
+        var skip = (int)Math.Min((long)(_skip ?? 0) + count, int.MaxValue);
+        return new(Session, Map, _filters, _ordering, skip, _take is int take ? Math.Max(take - count, 0) : null);
     }
 
-    /// <summary>Limits the number of rows.</summary>
+    /// <summary>Limits the number of rows. Like LINQ, it never raises an earlier, smaller Take.</summary>
     public Query<T> Take(int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        return new(Session, Map, _filters, _ordering, _skip, count);
+        return Limit(count);
     }
 
     /// <summary>

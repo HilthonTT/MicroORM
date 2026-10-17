@@ -65,11 +65,11 @@ internal sealed class MappingRegistry
             return [.. configured];
         }
 
-        // [Key] properties, ordered by [Column(Order = n)] and then by declaration.
+        // [Key] properties, ordered by [Column(Order = n)] and then by declaration. An unset Order is -1.
         List<string> annotated = properties
             .Select((p, index) => (Property: p, Index: index))
             .Where(x => x.Property.GetCustomAttribute<KeyAttribute>() is not null)
-            .OrderBy(x => x.Property.GetCustomAttribute<ColumnAttribute>()?.Order ?? int.MaxValue)
+            .OrderBy(x => x.Property.GetCustomAttribute<ColumnAttribute>() is { Order: >= 0 } column ? column.Order : int.MaxValue)
             .ThenBy(x => x.Index)
             .Select(x => x.Property.Name)
             .ToList();

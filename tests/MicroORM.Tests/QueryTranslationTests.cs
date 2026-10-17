@@ -129,6 +129,16 @@ public class QueryTranslationTests
     }
 
     [Fact]
+    public void Skip_and_take_compose_in_call_order_like_linq()
+    {
+        Assert.EndsWith("LIMIT 5 OFFSET 5", People.Take(10).Skip(5).ToString(), StringComparison.Ordinal);
+        Assert.EndsWith("LIMIT -1 OFFSET 5", People.Skip(2).Skip(3).ToString(), StringComparison.Ordinal);
+        Assert.EndsWith("LIMIT 2 OFFSET 1", People.Skip(1).Take(5).Take(2).ToString(), StringComparison.Ordinal);
+        Assert.EndsWith("LIMIT 5 OFFSET 1", People.Skip(1).Take(5).Take(10).ToString(), StringComparison.Ordinal);
+        Assert.EndsWith("WHERE 1 = 0", People.Take(3).Skip(5).ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Projections_alias_by_member_or_parameter_name()
     {
         Assert.Equal(

@@ -43,7 +43,8 @@ internal sealed class MicroEngine
         {
             SqlParameterValue parameter = parameters[i];
             object? value = parameter.Value;
-            if (Handlers.TryGet(value?.GetType() ?? parameter.ClrType, out var handler))
+            // The runtime type first, then the declared one: a handler for IReadOnlyList<string> must see a List<string>.
+            if (Handlers.TryGet(value?.GetType() ?? parameter.ClrType, out var handler) || Handlers.TryGet(parameter.ClrType, out handler))
             {
                 handlers[i] = handler;
                 converted[i] = value is null ? parameter : parameter with { Value = handler.Write(value) };

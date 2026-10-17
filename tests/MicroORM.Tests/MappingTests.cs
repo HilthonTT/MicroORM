@@ -3,9 +3,12 @@ using MicroORM.Dialects;
 using MicroORM.Mapping;
 using MicroORM.Materialization;
 using MicroORM.Sessions;
+using MicroORM.Sql;
 using MicroORM.Tests.Integration;
 using MicroORM.Tests.Model;
 using MicroORM.TypeHandlers;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace MicroORM.Tests;
 
@@ -68,6 +71,41 @@ public class MappingTests
         Assert.Equal("entries_v2", map.Table);
         Assert.Equal("remark", map.FindByProperty(nameof(Annotated.Note))!.Name);
         Assert.Null(map.FindByProperty(nameof(Annotated.Total)));
+    }
+
+    private sealed class PartlyOrderedKeys
+    {
+        [Key, Column("tenant")]
+        public int Tenant { get; set; }
+
+        [Key, Column(Order = 0)]
+        public int Region { get; set; }
+    }
+
+    [Fact]
+    public void Keys_without_a_column_order_follow_ordered_keys()
+    {
+        // [Column("tenant")] leaves Order at -1, which means "not set", not "first".
+        Assert.Equal(["region", "tenant"], Map<PartlyOrderedKeys>().Keys.Select(k => k.Name));
+    }
+
+    [Fact]
+    public void Null_converts_to_null_for_object()
+    {
+        Assert.Null(ValueConverter.To<object>(DBNull.Value));
+        Assert.Null(ValueConverter.To<object?>(null));
+    }
+
+    [Fact]
+    public void Handlers_for_the_declared_type_convert_parameters()
+    {
+        var engine = new MicroEngine(SqlDialect.Sqlite, new MicroOptions().AddJsonColumn<IReadOnlyList<string>>());
+        var parameter = new SqlParameterValue("@p0", new List<string> { "a", "b" }, typeof(IReadOnlyList<string>));
+
+        var prepared = engine.Prepare("SELECT @p0", System.Data.CommandType.Text, [parameter], null);
+
+        Assert.Equal("[\"a\",\"b\"]", prepared.Parameters[0].Value);
+        Assert.NotNull(prepared.Handlers[0]);
     }
 
     [Fact]
