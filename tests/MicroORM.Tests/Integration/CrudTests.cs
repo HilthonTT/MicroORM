@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations.Schema;
 using MicroORM.Materialization;
 using MicroORM.Tests.Model;
 
@@ -156,6 +157,86 @@ public class CrudTests
 
         await Assert.ThrowsAnyAsync<Exception>(() => database.Db.ExecuteAsync($"SELECT * FROM no_such_table"));
         Assert.NotNull(database.Log[^1].Error);
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Failed_streams_and_result_sets_are_logged_with_their_error(string provider)
+    {
+        await using var database = await TestDatabase.CreateAsync(provider);
+
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await foreach (var _ in database.Db.StreamAsync<int>($"SELECT 'not a number'"))
+            {
+            }
+        });
+        Assert.NotNull(Assert.Single(database.Log).Error);
+
+        Assert.ThrowsAny<Exception>(() => database.Db.Stream<int>($"SELECT 'not a number'").ToList());
+        Assert.NotNull(database.Log[^1].Error);
+
+        await using (var results = await database.Db.QueryMultipleAsync($"SELECT 'not a number'"))
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => results.ReadAsync<int>());
+        }
+
+        Assert.Equal(3, database.Log.Count);
+        Assert.NotNull(database.Log[^1].Error);
+    }
+
+    [Fact]
+    public async Task Upsert_of_an_existing_key_only_entity_does_not_insert_a_copy()
+    {
+        await using var database = await TestDatabase.CreateAsync("sqlite");
+        await database.Db.ExecuteAsync($"CREATE TABLE micro_counters (id INTEGER PRIMARY KEY AUTOINCREMENT)");
+        var counters = database.Db.Table<Counter>();
+        var counter = new Counter();
+        await counters.InsertAsync(counter);
+        var id = counter.Id;
+
+        await counters.UpsertAsync(counter);
+
+        Assert.Equal(id, counter.Id);
+        Assert.Equal(1, await counters.CountAsync());
+    }
+
+    [Fact]
+    public async Task Structs_and_camel_case_constructors_materialize()
+    {
+        await using var database = await TestDatabase.CreateAsync("sqlite");
+
+        var point = Assert.Single(await database.Db.QueryAsync<PointStruct>($"SELECT 1 AS x, 2 AS y"));
+        Assert.Equal((1, 2), (point.X, point.Y));
+
+        // Parameter "label" binds to property Label, mapped to column "tag_label".
+        var labelled = Assert.Single(await database.Db.QueryAsync<Labelled>($"SELECT 7 AS id, 'a' AS tag_label"));
+        Assert.Equal((7, "a"), (labelled.Id, labelled.Label));
+
+        // An exact column name wins over an earlier one that only matches without underscores.
+        var exact = Assert.Single(await database.Db.QueryAsync<NameDto>($"SELECT 1 AS id, 'wrong' AS up_per, 'right' AS upper"));
+        Assert.Equal("right", exact.Upper);
+    }
+
+    [Table("micro_counters")]
+    public sealed class Counter
+    {
+        public int Id { get; set; }
+    }
+
+    public struct PointStruct
+    {
+        public int X { get; set; }
+
+        public int Y { get; set; }
+    }
+
+    public sealed class Labelled(int id, string label)
+    {
+        public int Id { get; } = id;
+
+        [Column("tag_label")]
+        public string Label { get; } = label;
     }
 
     [Theory]

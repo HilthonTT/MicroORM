@@ -120,7 +120,7 @@ public class QueryFeatureTranslationTests
     {
         Assert.Equal("SELECT DISTINCT \"mood\" AS \"value\" FROM \"micro_people\" WHERE (\"age\" > @p0)", People.Where(p => p.Age > 1).OrderBy(p => p.Name).Select(p => p.Mood).Distinct().ToString());
         Assert.Equal(
-            "SELECT DISTINCT \"mood\" AS \"value\" FROM (SELECT " + PersonColumns + " FROM \"micro_people\" ORDER BY \"age\" LIMIT 3) AS \"paged\"",
+            "SELECT DISTINCT \"mood\" AS \"value\" FROM (SELECT " + PersonColumns + " FROM \"micro_people\" ORDER BY \"age\" LIMIT 3) AS \"micro_people\"",
             People.OrderBy(p => p.Age).Take(3).Select(p => p.Mood).Distinct().ToString());
     }
 

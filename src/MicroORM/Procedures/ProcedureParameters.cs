@@ -1,4 +1,5 @@
 using MicroORM.Materialization;
+using MicroORM.TypeHandlers;
 using System.Data;
 using System.Data.Common;
 
@@ -45,7 +46,9 @@ public sealed class ProcedureParameters
     /// <exception cref="InvalidOperationException">The parameter is input-only, or the procedure has not run yet.</exception>
     public T Get<T>(string name)
     {
-        var parameter = _parameters.Find(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+        ArgumentNullException.ThrowIfNull(name);
+        var bare = name.TrimStart('@', ':', '?');
+        var parameter = _parameters.Find(p => string.Equals(p.Name, bare, StringComparison.OrdinalIgnoreCase))
             ?? throw new KeyNotFoundException($"No procedure parameter is named '{name}'.");
         return parameter.HasResult
             ? ValueConverter.To<T>(parameter.Result)
@@ -76,13 +79,17 @@ public sealed class ProcedureParameters
         }
     }
 
-    internal void CollectOutputs(DbCommand command)
+    internal void CollectOutputs(DbCommand command, TypeHandlerRegistry handlers)
     {
         for (var i = 0; i < _parameters.Count; i++)
         {
             if (_parameters[i].Direction != ParameterDirection.Input)
             {
-                _parameters[i].Result = command.Parameters[i].Value;
+                // Through the type's handler, as inputs are written: Output<Email> reads back an Email.
+                var value = command.Parameters[i].Value;
+                _parameters[i].Result = value is not (null or DBNull) && handlers.TryGet(_parameters[i].Type, out var handler)
+                    ? handler.Read(value)
+                    : value;
                 _parameters[i].HasResult = true;
             }
         }

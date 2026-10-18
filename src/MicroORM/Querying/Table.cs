@@ -112,7 +112,8 @@ public sealed class Table<T> : Query<T>
     /// Columns with a unique constraint to match on, such as <c>u =&gt; u.Email</c> or
     /// <c>u =&gt; new { u.TenantId, u.Slug }</c>. Defaults to the primary key. If the key is an
     /// identity column and <paramref name="on"/> is omitted, an entity with a default key is
-    /// inserted and any other is updated (and inserted with a new key if its row is gone).
+    /// inserted and any other is updated (and inserted with a new key if its row is gone, unless
+    /// the entity has a version: then a missing row throws <see cref="MicroConcurrencyException"/>).
     /// </param>
     /// <param name="cancellationToken">A cancellation token.</param>
     public Task UpsertAsync(T entity, Expression<Func<T, object?>>? on = null, CancellationToken cancellationToken = default) =>
@@ -320,9 +321,16 @@ public sealed class Table<T> : Query<T>
         // An identity key can't be written explicitly, so "upsert by identity" means save: insert new, update existing.
         if (on is null && identity is not null && conflict.Contains(identity))
         {
-            if (!IsDefault(identity.GetValue(entity)) && await UpdateCore(async, entity, null, cancellationToken).ConfigureAwait(false))
+            if (!IsDefault(identity.GetValue(entity)))
             {
-                return;
+                // With nothing to assign, UPDATE can't tell an existing row from a missing one.
+                var updated = Map.Version is not null || Map.Columns.Any(c => c.IsUpdatable)
+                    ? await UpdateCore(async, entity, null, cancellationToken).ConfigureAwait(false)
+                    : await ExistsCore(async, entity, cancellationToken).ConfigureAwait(false);
+                if (updated)
+                {
+                    return;
+                }
             }
 
             await InsertCore(async, entity, cancellationToken).ConfigureAwait(false);
@@ -347,6 +355,12 @@ public sealed class Table<T> : Query<T>
 
         var key = await Session.ScalarCore<object>(async, sql, cancellationToken).ConfigureAwait(false);
         identity.SetValue(entity, key, Session.Engine.Handlers);
+    }
+
+    private async ValueTask<bool> ExistsCore(bool async, T entity, CancellationToken cancellationToken)
+    {
+        var sql = Sql.Sql.Empty.Append("SELECT 1 FROM ").AppendIdentifier(Map.Table).Append(" WHERE ").Append(EntityCondition(entity));
+        return await Session.ScalarCore<object>(async, sql, cancellationToken).ConfigureAwait(false) is not null;
     }
 
     // ---- Helpers -------------------------------------------------------------------------------

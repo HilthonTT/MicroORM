@@ -24,6 +24,7 @@ public sealed class ResultSets : IAsyncDisposable, IDisposable
     private readonly Stopwatch _stopwatch;
     private bool _started;
     private bool _disposed;
+    private Exception? _error;
 
     internal ResultSets(
         MicroSession session,
@@ -68,7 +69,7 @@ public sealed class ResultSets : IAsyncDisposable, IDisposable
     /// <inheritdoc />
     public void Dispose() => MicroSession.Sync(DisposeCore(false));
 
-    private async ValueTask<List<T>> ReadCore<T>(bool async, int? maxRows, CancellationToken cancellationToken)
+    private async ValueTask<List<T>> ReadSetCore<T>(bool async, int? maxRows, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_started)
@@ -82,6 +83,20 @@ public sealed class ResultSets : IAsyncDisposable, IDisposable
 
         _started = true;
         return await MicroSession.ReadRows(_reader, async, _session.Engine.Materializer.For<T>, maxRows, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<List<T>> ReadCore<T>(bool async, int? maxRows, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReadSetCore<T>(async, maxRows, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Logged on dispose, where the command's elapsed time is known.
+            _error ??= ex;
+            throw;
+        }
     }
 
     private async ValueTask DisposeCore(bool async)
@@ -100,7 +115,7 @@ public sealed class ResultSets : IAsyncDisposable, IDisposable
         finally
         {
             await _lease.DisposeCore(async).ConfigureAwait(false);
-            _session.Log(_prepared, _stopwatch, null);
+            _session.Log(_prepared, _stopwatch, _error);
         }
     }
 }

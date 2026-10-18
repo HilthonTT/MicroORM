@@ -23,6 +23,8 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Outside a transaction, `InsertMany` opens its own only when it needs more than one statement. A single multi-row `INSERT` is atomic without one.
+- `Where`, `OrderBy` and `ThenBy` after `Skip` or `Take` throw `NotSupportedException`. They used to filter or order before the paging, so `Take(2).Where(...)` could return rows LINQ would not.
+- On SQL Server, string concatenation uses `CONCAT(...)` instead of `+`, so `x.Name + x.Age` concatenates instead of adding numbers, and a `NULL` operand counts as an empty string, as in C#.
 
 ### Security
 
@@ -43,6 +45,16 @@ All notable changes to this project are documented here. The format follows
 - Type handlers registered for a property's declared type (such as `AddJsonColumn<IReadOnlyList<string>>()`) now convert parameter values whose runtime type differs (a `List<string>`).
 - `[Key]` properties with `[Column]` but no `Order` sort after keys with an explicit `Order` instead of before them.
 - `ValueConverter.To<object>` and `Scalar<object>` return `null` for `DBNull`.
+- `!list.Contains(x.Column)` over an empty list matches every row instead of none, and over a list holding only `null` matches the non-null rows.
+- `array.Contains(x.Column)` over an array of a nullable type (`int?[]`) translates instead of throwing under C# 14.
+- Conditions used as values (`OrderBy(x => x.Email == null)`, `Set(x => x.Flag, x => x.Age > 30)`) become `CASE WHEN ... THEN 1 ELSE 0 END`, which SQL Server accepts.
+- A paged `Distinct` or aggregate whose select list holds a correlated subquery no longer fails with an unknown column.
+- `Upsert` of an entity with only an identity key no longer inserts a copy of an existing row.
+- Structs without a declared constructor materialize, and constructor parameters bind to properties mapped to a different column name (`id` to `Id` mapped with `[Column("person_id")]`).
+- When a result has both `a_b` and `ab` columns, property `Ab` binds to `ab`, the exact match.
+- `Stream`, `StreamAsync` and `QueryMultiple` log a command that fails while reading with its error, instead of as a success.
+- Disposing a transaction whose work failed no longer replaces that exception with one from the rollback.
+- `ProcedureParameters.Get("@name")` finds a parameter added as `"@name"`, and outputs of a type with a registered type handler are read through it.
 
 ## [0.1.0] - 2026-10-16
 

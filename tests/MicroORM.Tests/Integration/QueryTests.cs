@@ -71,6 +71,13 @@ public class QueryTests
         Assert.Equal(["Ada"], await Names(people.Where(p => p.Name == "Ada" && enabled != false)));
         string?[] noEmail = [null];
         Assert.Equal(["50% Eve_", "Brendan", "Dmitri"], await Names(people.Where(p => noEmail.Contains(p.Email))));
+        Assert.Equal(["Ada", "Cleo"], await Names(people.Where(p => !noEmail.Contains(p.Email))));
+        int[] noIds = [];
+        Assert.Equal(5, (await Names(people.Where(p => !noIds.Contains(p.Id)))).Length);
+
+        // Filtering or ordering a page would have to apply after the paging; that isn't supported.
+        Assert.Throws<NotSupportedException>(() => people.Take(2).Where(p => p.Age > 30));
+        Assert.Throws<NotSupportedException>(() => people.OrderBy(p => p.Id).Skip(1).OrderByDescending(p => p.Age));
 
         var none = people.OrderBy(p => p.Name).Take(0);
         Assert.Empty(await none.ToListAsync());

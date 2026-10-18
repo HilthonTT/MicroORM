@@ -149,7 +149,10 @@ public class QueryTranslationTests
 
         var sqlServer = new MicroDb(SqlDialect.SqlServer, NoConnection).Table<Person>();
         var mySql = new MicroDb(SqlDialect.MySql, NoConnection).Table<Person>();
-        Assert.Contains("(([Name] + @p0) = @p1)", sqlServer.Where(p => p.Name + "!" == "x!").ToString(), StringComparison.Ordinal);
+        Assert.Contains("(CONCAT([Name], @p0) = @p1)", sqlServer.Where(p => p.Name + "!" == "x!").ToString(), StringComparison.Ordinal);
+
+        // SQL Server has no boolean values: a condition used as one becomes a CASE.
+        Assert.Contains("ORDER BY CASE WHEN ([Email] IS NULL) THEN 1 ELSE 0 END", sqlServer.OrderBy(p => p.Email == null).ToString(), StringComparison.Ordinal);
         Assert.Contains("(CONCAT(`Name`, @p0) = @p1)", mySql.Where(p => p.Name + "!" == "x!").ToString(), StringComparison.Ordinal);
     }
 

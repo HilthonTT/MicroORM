@@ -142,7 +142,23 @@ public class Query<T> : IProjectionSource, ISubquerySource
     internal Query<T> Limit(int count) =>
         new(Session, Map, _filters, _ordering, _skip, _take is int take ? Math.Min(take, count) : count, _ignoreQueryFilters);
 
-    private Query<T> Filter(Sql.Sql condition) => new(Session, Map, [.. _filters, condition], _ordering, _skip, _take, _ignoreQueryFilters);
+    private Query<T> Filter(Sql.Sql condition)
+    {
+        ThrowIfPaged("Where");
+        return new(Session, Map, [.. _filters, condition], _ordering, _skip, _take, _ignoreQueryFilters);
+    }
+
+    /// <summary>
+    /// Filtering or ordering a page would have to apply after the paging, as in LINQ, but this query
+    /// pages last. Throws rather than silently filtering or ordering before the page.
+    /// </summary>
+    private void ThrowIfPaged(string operation)
+    {
+        if (IsPaged)
+        {
+            throw new NotSupportedException($"{operation} cannot follow Skip or Take; call it before them.");
+        }
+    }
 
     // ---- Rows ----------------------------------------------------------------------------------
 
@@ -338,8 +354,14 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// keeps no order, and PostgreSQL and SQL Server reject ordering by a column it doesn't select.
     /// </summary>
     private Sql.Sql DistinctSql(Sql.Sql selectList) => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT DISTINCT ").Append(selectList).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier("paged")
+        ? Sql.Sql.Empty.Append("SELECT DISTINCT ").Append(selectList).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
         : SelectSql(selectList, ordered: false, distinct: true);
+
+    /// <summary>
+    /// The alias of the derived table a page is read from: the table's own name, which correlated
+    /// subqueries in the select list use to refer to its rows.
+    /// </summary>
+    private string PageAlias => Map.Table[(Map.Table.LastIndexOf('.') + 1)..];
 
     private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
         ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))
@@ -347,7 +369,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
 
     /// <summary>Applies an aggregate to the filtered rows, or to the page when Skip/Take is set.</summary>
     private Sql.Sql AggregateSql(Sql.Sql aggregate) => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") paged")
+        ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
         : Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM ").AppendIdentifier(Map.Table).Append(WhereClause());
 
     private Sql.Sql Aggregate(string function, LambdaExpression selector)
@@ -399,6 +421,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
     private Query<T> Order<TKey>(Expression<Func<T, TKey>> key, bool descending, bool replace)
     {
         ArgumentNullException.ThrowIfNull(key);
+        ThrowIfPaged(replace ? "OrderBy" : "ThenBy");
         var expression = ExpressionTranslator.Value(key, Map, Dialect);
         IReadOnlyList<(Sql.Sql, bool)> ordering = replace ? [(expression, descending)] : [.. _ordering, (expression, descending)];
         return new(Session, Map, _filters, ordering, _skip, _take, _ignoreQueryFilters);

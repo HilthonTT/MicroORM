@@ -14,6 +14,17 @@ public class ProcedureTests
 
     public static TheoryData<string> SqlServer => TestDatabase.With(["sqlserver"]);
 
+    [Fact]
+    public void Parameters_are_found_with_or_without_a_prefix()
+    {
+        var parameters = new ProcedureParameters().Output<int>("@total");
+
+        // Not run yet, so no result, but found under both spellings rather than KeyNotFoundException.
+        Assert.Throws<InvalidOperationException>(() => parameters.Get<int>("total"));
+        Assert.Throws<InvalidOperationException>(() => parameters.Get<int>("@total"));
+        Assert.Throws<KeyNotFoundException>(() => parameters.Get<int>("other"));
+    }
+
     [ProviderTheory("postgres", "sqlserver", "mysql")]
     [MemberData(nameof(WithProcedures))]
     public async Task Output_parameters_are_read_back(string provider)
@@ -24,6 +35,7 @@ public class ProcedureTests
         await database.Db.ExecuteProcedureAsync("micro_add", parameters);
 
         Assert.Equal(5, parameters.Get<int>("total"));
+        Assert.Equal(5, parameters.Get<int>("@total"));
         Assert.Throws<InvalidOperationException>(() => parameters.Get<int>("a"));
     }
 

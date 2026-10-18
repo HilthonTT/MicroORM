@@ -70,7 +70,7 @@ internal sealed class ExpressionTranslator
 
     /// <summary>Translates a value expression (<c>x =&gt; x.Name</c>) into a SQL expression.</summary>
     public static Sql.Sql Value(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>
-        new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Visit(lambda.Body);
+        new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Projected(lambda.Body);
 
     /// <summary>Whether a <c>Select</c> lambda selects one value (aliased <see cref="ValueAlias"/>) rather than members.</summary>
     public static bool SelectsSingleValue(LambdaExpression lambda) =>
@@ -422,6 +422,14 @@ internal sealed class ExpressionTranslator
             var values = ((IEnumerable?)Evaluate(source) ?? Array.Empty<object>()).Cast<object?>().ToList();
             var nonNull = values.Where(v => v is not null).ToList();
             var column = Visit(item);
+            if (nonNull.Count == 0)
+            {
+                // Not "IN (NULL)": that is unknown rather than false, so NOT (x IN (NULL)) matches nothing.
+                return values.Count == 0
+                    ? Sql.Sql.Raw("1 = 0")
+                    : Sql.Sql.Empty.Append("(").Append(column).Append(" IS NULL)");
+            }
+
             var contains = Sql.Sql.Empty.Append("(").Append(column).Append(" IN ").AppendList(nonNull).Append(")");
 
             // C#'s Contains finds a null item, but SQL's IN never matches NULL.
@@ -603,7 +611,11 @@ internal sealed class ExpressionTranslator
             return typeof(IEnumerable).IsAssignableFrom(node.Object.Type);
         }
 
-        if (node.Object is null && node.Arguments.Count == 2 &&
+        // Under C# 14, an array of a type that isn't IEquatable<T> (such as int?) binds to
+        // MemoryExtensions.Contains(span, value, comparer) with a null comparer.
+        var nullComparer = node.Arguments.Count == 3 && node.Method.DeclaringType == typeof(MemoryExtensions) &&
+            node.Arguments[2] is ConstantExpression { Value: null };
+        if (node.Object is null && (node.Arguments.Count == 2 || nullComparer) &&
             (node.Method.DeclaringType == typeof(Enumerable) || node.Method.DeclaringType == typeof(MemoryExtensions)))
         {
             source = node.Arguments[0];

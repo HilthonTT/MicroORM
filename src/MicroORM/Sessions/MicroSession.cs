@@ -113,18 +113,36 @@ public abstract partial class MicroSession
             await using (reader.ConfigureAwait(false))
             {
                 // finally, so callers that stop early (FirstOrDefault, break) are still logged.
+                // Only the read sits in the try/catch: C# doesn't allow yield return inside one.
+                Exception? error = null;
                 try
                 {
                     Func<DbDataReader, T>? materialize = null;
-                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    while (true)
                     {
-                        materialize ??= Engine.Materializer.For<T>(reader);
-                        yield return materialize(reader);
+                        T row;
+                        try
+                        {
+                            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                break;
+                            }
+
+                            materialize ??= Engine.Materializer.For<T>(reader);
+                            row = materialize(reader);
+                        }
+                        catch (Exception ex)
+                        {
+                            error = ex;
+                            throw;
+                        }
+
+                        yield return row;
                     }
                 }
                 finally
                 {
-                    Log(prepared, stopwatch, null);
+                    Log(prepared, stopwatch, error);
                 }
             }
         }
@@ -230,7 +248,7 @@ public abstract partial class MicroSession
             try
             {
                 var result = await run(command, async, cancellationToken).ConfigureAwait(false);
-                prepared.Procedure?.CollectOutputs(command);
+                prepared.Procedure?.CollectOutputs(command, Engine.Handlers);
                 Log(prepared, stopwatch, null);
                 return result;
             }

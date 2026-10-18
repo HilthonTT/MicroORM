@@ -136,17 +136,24 @@ internal sealed class Materializer
         var type = typeof(T);
         var map = _mappings.GetMap(type);
 
-        // Every name a column may go by, pointing at its ordinal in the reader.
+        // Every name a column may go by, pointing at its ordinal in the reader. Exact names first,
+        // so a column named "ab" wins over an earlier "a_b" for property Ab.
         var ordinals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < names.Length; i++)
         {
             ordinals.TryAdd(names[i], start + i);
+        }
+
+        for (var i = 0; i < names.Length; i++)
+        {
             ordinals.TryAdd(Normalize(names[i]), start + i);
         }
 
         int? OrdinalOf(string memberName)
         {
-            var column = map.FindByProperty(memberName)?.Name;
+            // Constructor parameters are usually camelCase ("id" for property Id).
+            var column = (map.FindByProperty(memberName)
+                ?? map.Columns.FirstOrDefault(c => string.Equals(c.Property.Name, memberName, StringComparison.OrdinalIgnoreCase)))?.Name;
             if (column is not null && ordinals.TryGetValue(column, out var byColumn))
             {
                 return byColumn;
@@ -167,8 +174,10 @@ internal sealed class Materializer
         }
 
         var (constructor, arguments) = ChooseConstructor(type, OrdinalOf);
-        var parameters = constructor.GetParameters();
-        var newExpression = Expression.New(constructor, arguments.Select((ordinal, i) => Read(ordinal, parameters[i].ParameterType)));
+        var parameters = constructor?.GetParameters() ?? [];
+        var newExpression = constructor is null
+            ? Expression.New(type)
+            : Expression.New(constructor, arguments.Select((ordinal, i) => Read(ordinal, parameters[i].ParameterType)));
 
         var bound = new HashSet<string>(parameters.Select(p => p.Name!), StringComparer.OrdinalIgnoreCase);
         var bindings = new List<MemberBinding>();
@@ -189,7 +198,8 @@ internal sealed class Materializer
         return Expression.Lambda<Func<DbDataReader, T>>(body, reader).Compile();
     }
 
-    private static (ConstructorInfo Constructor, int[] Ordinals) ChooseConstructor(Type type, Func<string, int?> ordinalOf)
+    /// <summary>The constructor to call, or <see langword="null"/> for a struct's implicit default one.</summary>
+    private static (ConstructorInfo? Constructor, int[] Ordinals) ChooseConstructor(Type type, Func<string, int?> ordinalOf)
     {
         var constructors = type.GetConstructors(BindingFlags.Public | BindingFlags.Instance);
         if (constructors.FirstOrDefault(c => c.GetParameters().Length == 0) is { } parameterless)
@@ -204,6 +214,12 @@ internal sealed class Materializer
             {
                 return (constructor, ordinals.Select(o => o!.Value).ToArray());
             }
+        }
+
+        // Reflection doesn't list a struct's implicit parameterless constructor.
+        if (type.IsValueType)
+        {
+            return (null, []);
         }
 
         throw new InvalidOperationException(

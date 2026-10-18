@@ -48,6 +48,17 @@ public class SubqueryTests
         Assert.True(await buyers.ContainsAsync(null));
         Assert.False(buyers.Contains(-1));
         Assert.True(await buyers.Distinct().ContainsAsync((await people.FirstOrDefaultAsync(p => p.Name == "Cleo"))!.Id));
+
+        // int?[] binds to MemoryExtensions.Contains(span, value, comparer) under C# 14.
+        var orders = database.Db.Table<Order>();
+        int?[] nobody = [null];
+        Assert.Equal(1, await orders.Where(o => nobody.Contains(o.PersonId)).CountAsync());
+        Assert.Equal(5, await orders.Where(o => !nobody.Contains(o.PersonId)).CountAsync());
+
+        // A paged Distinct reads the page from a derived table; the correlated subquery still finds its row.
+        var youngest = await people.OrderBy(p => p.Age).Take(3)
+            .Select(p => new { Ordered = orders.Any(o => o.PersonId == p.Id) }).Distinct().ToListAsync();
+        Assert.Equal([false, true], youngest.Select(r => r.Ordered).Order());
     }
 
     [Theory]

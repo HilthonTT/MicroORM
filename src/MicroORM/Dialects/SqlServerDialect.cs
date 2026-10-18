@@ -17,8 +17,9 @@ internal sealed class SqlServerDialect : SqlDialect
 
     protected override string QuotePart(string part) => "[" + part.Replace("]", "]]", StringComparison.Ordinal) + "]";
 
+    // Not "+": with a number on one side SQL Server adds, converting the text to a number.
     public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>
-        Sql.Sql.Empty.Append("(").Append(left).Append(" + ").Append(right).Append(")");
+        Sql.Sql.Empty.Append("CONCAT(").Append(left).Append(", ").Append(right).Append(")");
 
     public override Sql.Sql DatePart(DatePart part, Sql.Sql value) =>
         Sql.Sql.Empty.Append("DATEPART(" + part.ToString().ToLowerInvariant() + ", ").Append(value).Append(")");

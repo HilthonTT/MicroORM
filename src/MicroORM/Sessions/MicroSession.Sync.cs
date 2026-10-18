@@ -62,18 +62,36 @@ public abstract partial class MicroSession
 
             using (reader)
             {
+                // Only the read sits in the try/catch: C# doesn't allow yield return inside one.
+                Exception? error = null;
                 try
                 {
                     Func<DbDataReader, T>? materialize = null;
-                    while (reader.Read())
+                    while (true)
                     {
-                        materialize ??= Engine.Materializer.For<T>(reader);
-                        yield return materialize(reader);
+                        T row;
+                        try
+                        {
+                            if (!reader.Read())
+                            {
+                                break;
+                            }
+
+                            materialize ??= Engine.Materializer.For<T>(reader);
+                            row = materialize(reader);
+                        }
+                        catch (Exception ex)
+                        {
+                            error = ex;
+                            throw;
+                        }
+
+                        yield return row;
                     }
                 }
                 finally
                 {
-                    Log(prepared, stopwatch, null);
+                    Log(prepared, stopwatch, error);
                 }
             }
         }

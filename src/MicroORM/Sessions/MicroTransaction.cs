@@ -98,6 +98,13 @@ public sealed class MicroTransaction : MicroSession, IAsyncDisposable, IDisposab
                 }
             }
         }
+        catch (Exception)
+        {
+            // Disposing usually runs while an exception from the work is in flight. When that
+            // exception (a deadlock, a dropped connection) already ended the transaction, rolling
+            // back throws again and would hide it. Disposing the provider transaction below still
+            // rolls back anything left pending.
+        }
         finally
         {
             await DisposeCore(_transaction, async).ConfigureAwait(false);
