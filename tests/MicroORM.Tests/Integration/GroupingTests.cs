@@ -48,7 +48,8 @@ public class GroupingTests
         Assert.Equal(ada.Id, biggest);
 
         var people = database.Db.Table<Person>();
-        Assert.Equal(Mood.Happy, await people.GroupBy(p => p.Mood).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefaultAsync());
+        // Happy and Calm both have two people; the key breaks the tie, or the database picks either.
+        Assert.Equal(Mood.Happy, await people.GroupBy(p => p.Mood).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).Select(g => g.Key).FirstOrDefaultAsync());
         Assert.Empty(await people.GroupBy(p => p.Mood).Take(0).Select(g => g.Key).ToListAsync());
     }
 

@@ -1,7 +1,6 @@
-using System.ComponentModel.DataAnnotations.Schema;
 using MicroORM.Materialization;
 using MicroORM.Tests.Model;
-
+using System.ComponentModel.DataAnnotations.Schema;
 using static MicroORM.Tests.Integration.Seed;
 
 namespace MicroORM.Tests.Integration;
