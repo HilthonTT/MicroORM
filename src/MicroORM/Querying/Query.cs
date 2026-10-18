@@ -126,6 +126,18 @@ public class Query<T> : IProjectionSource, ISubquerySource
         return new Projection<T, TResult>(this, ExpressionTranslator.SelectList(selector, Map, Dialect), ExpressionTranslator.SelectsSingleValue(selector));
     }
 
+    /// <summary>
+    /// Groups the rows by a key: one value (<c>x =&gt; x.CustomerId</c>) or several
+    /// (<c>x =&gt; new { x.CustomerId, x.Status }</c>). Select the key and aggregates from the groups:
+    /// <c>.GroupBy(o =&gt; o.CustomerId).Select(g =&gt; new { g.Key, Total = g.Sum(o =&gt; o.Amount) })</c>.
+    /// Like LINQ, it groups the rows left after this query's filters and paging.
+    /// </summary>
+    public GroupedQuery<TKey, T> GroupBy<TKey>(Expression<Func<T, TKey>> key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return new GroupedQuery<TKey, T>(this, key);
+    }
+
     /// <summary>Caps the number of rows without raising a smaller <see cref="Take"/> already set.</summary>
     internal Query<T> Limit(int count) =>
         new(Session, Map, _filters, _ordering, _skip, _take is int take ? Math.Min(take, count) : count, _ignoreQueryFilters);

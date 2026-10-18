@@ -14,8 +14,10 @@ namespace MicroORM.Querying;
 /// client-side.
 /// </summary>
 /// <remarks>
-/// Inside a subquery, the parameter's columns are qualified with the subquery's alias and the
-/// enclosing entities are outer scopes.
+/// With a <see cref="GroupKey"/>, the parameter is an <see cref="IGrouping{TKey, TElement}"/> of
+/// entities instead: <c>g.Key</c> is the grouping key and <c>Count</c>, <c>Sum</c>, <c>Min</c>,
+/// <c>Max</c> and <c>Average</c> over <c>g</c> are aggregates. Inside a subquery, the parameter's
+/// columns are qualified with the subquery's alias and the enclosing entities are outer scopes.
 /// </remarks>
 internal sealed class ExpressionTranslator
 {
@@ -28,11 +30,15 @@ internal sealed class ExpressionTranslator
 
     private readonly SqlDialect _dialect;
 
+    private readonly GroupKey? _group;
+
     /// <summary>Qualifies the entity's columns in a subquery; <see langword="null"/> at the top level.</summary>
     private readonly string? _qualifier;
 
     /// <summary>The entities of the enclosing queries, innermost first.</summary>
     private readonly IReadOnlyList<Scope> _outer;
+
+    private readonly bool _subqueries;
 
     private readonly ParameterExpression[] _parameters;
 
@@ -40,39 +46,62 @@ internal sealed class ExpressionTranslator
         EntityMap map,
         ParameterExpression entity,
         SqlDialect dialect,
+        GroupKey? group = null,
         string? qualifier = null,
-        IReadOnlyList<Scope>? outer = null)
+        IReadOnlyList<Scope>? outer = null,
+        bool subqueries = true)
     {
         _map = map;
         _entity = entity;
         _dialect = dialect;
+        _group = group;
         _qualifier = qualifier;
         _outer = outer ?? [];
+        _subqueries = subqueries && group is null;
         _parameters = [entity, .. _outer.Select(s => s.Parameter)];
     }
 
     /// <summary>How a subquery refers to this entity: by its alias, or at the top level by its table.</summary>
     private string Reference => _qualifier ?? _map.Table;
 
-    /// <summary>Translates a predicate (<c>x =&gt; bool</c>) into a <c>WHERE</c> condition.</summary>
-    public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect) =>
-        new ExpressionTranslator(map, lambda.Parameters[0], dialect).Condition(lambda.Body);
+    /// <summary>Translates a predicate (<c>x =&gt; bool</c>) into a <c>WHERE</c> condition, or over groups into a <c>HAVING</c> one.</summary>
+    public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>
+        new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Condition(lambda.Body);
 
     /// <summary>Translates a value expression (<c>x =&gt; x.Name</c>) into a SQL expression.</summary>
-    public static Sql.Sql Value(LambdaExpression lambda, EntityMap map, SqlDialect dialect) =>
-        new ExpressionTranslator(map, lambda.Parameters[0], dialect).Visit(lambda.Body);
+    public static Sql.Sql Value(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>
+        new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Visit(lambda.Body);
 
     /// <summary>Whether a <c>Select</c> lambda selects one value (aliased <see cref="ValueAlias"/>) rather than members.</summary>
     public static bool SelectsSingleValue(LambdaExpression lambda) =>
         lambda.Body is not (NewExpression { Members: not null } or NewExpression { Arguments.Count: > 0 } or MemberInitExpression);
 
-    public static Sql.Sql SelectList(LambdaExpression lambda, EntityMap map, SqlDialect dialect)
+    /// <summary>
+    /// Translates the parts of a grouping key: one value, or the members of an anonymous type. A
+    /// part is a column when it is a plain mapped property.
+    /// </summary>
+    public static IReadOnlyList<(string? Name, Sql.Sql Value, bool IsColumn)> GroupKeyParts(LambdaExpression lambda, EntityMap map, SqlDialect dialect)
     {
         var translator = new ExpressionTranslator(map, lambda.Parameters[0], dialect);
+        IEnumerable<(string? Name, Expression Value)> items = lambda.Body is NewExpression { Members: { } members } anonymous
+            ? anonymous.Arguments.Select((a, i) => ((string?)members[i].Name, a))
+            : [(null, lambda.Body)];
+
+        return items.Select(item => (
+            item.Name,
+            translator.Projected(item.Value),
+            StripConvert(item.Value) is MemberExpression member && member.Expression == lambda.Parameters[0])).ToList();
+    }
+
+    public static Sql.Sql SelectList(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null)
+    {
+        var translator = new ExpressionTranslator(map, lambda.Parameters[0], dialect, group);
         var body = lambda.Body;
         if (body == lambda.Parameters[0])
         {
-            throw new NotSupportedException("Select(x => x) selects the whole entity; run the query without Select instead.");
+            throw new NotSupportedException(group is null
+                ? "Select(x => x) selects the whole entity; run the query without Select instead."
+                : "Select(g => g) selects whole groups, which can't be read as rows; select the key and aggregates instead, such as g => new { g.Key, Count = g.Count() }.");
         }
 
         IEnumerable<(Expression Value, string Alias)> items = body switch
@@ -122,7 +151,10 @@ internal sealed class ExpressionTranslator
     private Sql.Sql Projected(Expression node)
     {
         var stripped = StripConvert(node);
-        var isCondition = node.Type == typeof(bool) && stripped is not MemberExpression { Expression: ParameterExpression };
+
+        // A bool column, or a bool grouping key, is a value already.
+        var isCondition = node.Type == typeof(bool) && stripped is not MemberExpression { Expression: ParameterExpression } &&
+            !(_group is not null && stripped is MemberExpression { Expression: MemberExpression { Member.Name: "Key", Expression: var key } } && key == _entity);
         return isCondition && DependsOnEntity(node)
             ? Sql.Sql.Empty.Append("CASE WHEN ").Append(Condition(node)).Append(" THEN 1 ELSE 0 END")
             : Visit(node);
@@ -224,6 +256,11 @@ internal sealed class ExpressionTranslator
 
     private Sql.Sql VisitMember(MemberExpression node)
     {
+        if (_group is not null && GroupKeyMember(node) is { } key)
+        {
+            return key;
+        }
+
         if (node.Expression == _entity)
         {
             var column = _map.FindByProperty(node.Member.Name)
@@ -264,6 +301,24 @@ internal sealed class ExpressionTranslator
         throw Unsupported(node);
     }
 
+    /// <summary>Translates <c>g.Key</c>, or a member of a composite key (<c>g.Key.Name</c>).</summary>
+    private Sql.Sql? GroupKeyMember(MemberExpression node)
+    {
+        if (node.Expression == _entity && node.Member.Name == "Key")
+        {
+            return _group!.IsComposite
+                ? throw new NotSupportedException("A composite grouping key can't be used whole here; use its members, such as g.Key.Name.")
+                : Sql.Sql.Empty.Append(_group.Parts[0].Value);
+        }
+
+        if (_group!.IsComposite && node.Expression is MemberExpression { Member.Name: "Key" } key && key.Expression == _entity)
+        {
+            return Sql.Sql.Empty.Append(_group.Parts.First(p => p.Name == node.Member.Name).Value);
+        }
+
+        return null;
+    }
+
     private static DatePart? DatePartOf(MemberExpression node)
     {
         var type = node.Expression!.Type;
@@ -288,6 +343,11 @@ internal sealed class ExpressionTranslator
     private Sql.Sql VisitCall(MethodCallExpression node)
     {
         var method = node.Method;
+
+        if (_group is not null && method.DeclaringType == typeof(Enumerable) && node.Arguments.Count > 0 && node.Arguments[0] == _entity)
+        {
+            return Aggregate(node);
+        }
 
         if (IsSubquery(node))
         {
@@ -378,6 +438,34 @@ internal sealed class ExpressionTranslator
         throw Unsupported(node);
     }
 
+    /// <summary>Translates an aggregate over a group, such as <c>g.Count()</c> or <c>g.Sum(x =&gt; x.Amount)</c>.</summary>
+    private Sql.Sql Aggregate(MethodCallExpression node)
+    {
+        var selector = node.Arguments.Count == 2 ? StripQuote(node.Arguments[1]) as LambdaExpression : null;
+        switch (node.Method.Name)
+        {
+            case nameof(Enumerable.Count) or nameof(Enumerable.LongCount) when node.Arguments.Count == 1:
+                return Sql.Sql.Raw("COUNT(*)");
+            case nameof(Enumerable.Count) or nameof(Enumerable.LongCount) when selector is not null:
+                return Sql.Sql.Empty.Append("COUNT(CASE WHEN ").Append(Rows(selector).Condition(selector.Body)).Append(" THEN 1 END)");
+            case nameof(Enumerable.Sum) when selector is not null:
+                // LINQ sums no values to zero; SQL to NULL.
+                return Sql.Sql.Empty.Append("COALESCE(SUM(").Append(Rows(selector).Visit(selector.Body)).Append("), 0)");
+            case nameof(Enumerable.Min) or nameof(Enumerable.Max) when selector is not null:
+                return Sql.Sql.Empty.Append(node.Method.Name.ToUpperInvariant() + "(").Append(Rows(selector).Visit(selector.Body)).Append(")");
+            case nameof(Enumerable.Average) when selector is not null:
+                // Integers are averaged as floats so the fraction survives, as in LINQ; decimals stay exact.
+                var value = Rows(selector).Visit(selector.Body);
+                return (Nullable.GetUnderlyingType(node.Type) ?? node.Type) == typeof(decimal)
+                    ? Sql.Sql.Empty.Append("AVG(").Append(value).Append(")")
+                    : Sql.Sql.Empty.Append("AVG(CAST(").Append(value).Append(" AS " + _dialect.FloatType + "))");
+            default:
+                throw Unsupported(node);
+        }
+
+        ExpressionTranslator Rows(LambdaExpression lambda) => new(_map, lambda.Parameters[0], _dialect, subqueries: false);
+    }
+
     /// <summary>
     /// Whether a call is a subquery: <c>query.Any(...)</c> on a typed query, or
     /// <c>projection.Contains(value)</c> on a projection.
@@ -396,6 +484,11 @@ internal sealed class ExpressionTranslator
     /// </summary>
     private Sql.Sql Subquery(MethodCallExpression node)
     {
+        if (!_subqueries)
+        {
+            throw new NotSupportedException($"MicroORM cannot translate '{node}': subqueries aren't supported in grouped queries.");
+        }
+
         if (EntityFinder.Finds(node.Object!, _parameters, subqueries: false))
         {
             throw new NotSupportedException($"MicroORM cannot translate '{node}': the subquery itself can't depend on the row. Correlate it in the predicate instead, such as orders.Any(o => o.CustomerId == c.Id).");
@@ -580,7 +673,7 @@ internal sealed class ExpressionTranslator
     }
 
     private static NotSupportedException Unsupported(Expression node) =>
-      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains, and subqueries (query.Any, projection.Contains). Use .Where($\"...\") for anything else.");
+      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains, subqueries (query.Any, projection.Contains) and, over groups, Count/Sum/Min/Max/Average. Use .Where($\"...\") for anything else.");
 
     /// <summary>An entity of an enclosing query, which a subquery refers to by <paramref name="Reference"/> (its alias or table).</summary>
     private sealed record Scope(ParameterExpression Parameter, EntityMap Map, string Reference);

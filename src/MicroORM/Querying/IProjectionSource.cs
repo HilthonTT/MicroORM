@@ -2,7 +2,7 @@ using MicroORM.Sessions;
 
 namespace MicroORM.Querying;
 
-/// <summary>Something a <see cref="Projection{T, TResult}"/> selects from.</summary>
+/// <summary>Something a <see cref="Projection{T, TResult}"/> selects from: a query or a grouped query.</summary>
 internal interface IProjectionSource
 {
     MicroSession Session { get; }

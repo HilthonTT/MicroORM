@@ -49,6 +49,70 @@ public class QueryFeatureTranslationTests
         Assert.Equal(21, query.ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
     }
 
+    // ---- GroupBy -------------------------------------------------------------------------------
+
+    [Fact]
+    public void Group_by_a_column_selects_the_key_and_aggregates()
+    {
+        Assert.Equal(
+            "SELECT \"person_id\" AS \"Key\", COUNT(*) AS \"Count\", COALESCE(SUM(\"amount\"), 0) AS \"Total\", MIN(\"amount\") AS \"Smallest\", " +
+            "AVG(CAST(\"amount\" AS REAL)) AS \"Average\", COUNT(CASE WHEN (\"amount\" > @p0) THEN 1 END) AS \"Large\" FROM \"micro_orders\" GROUP BY \"person_id\"",
+            Orders.GroupBy(o => o.PersonId)
+                .Select(g => new { g.Key, Count = g.Count(), Total = g.Sum(o => o.Amount), Smallest = g.Min(o => o.Amount), Average = g.Average(o => o.Amount), Large = g.Count(o => o.Amount > 50) })
+                .ToString());
+    }
+
+    [Fact]
+    public void Group_filters_ordering_and_paging()
+    {
+        Assert.Equal(
+            "SELECT \"person_id\" AS \"value\" FROM \"micro_orders\" WHERE (\"amount\" > @p0) GROUP BY \"person_id\" HAVING (COUNT(*) > @p1) " +
+            "ORDER BY COALESCE(SUM(\"amount\"), 0) DESC, \"person_id\" LIMIT 3 OFFSET 1",
+            Orders.Where(o => o.Amount > 0).GroupBy(o => o.PersonId).Having(g => g.Count() > 1)
+                .OrderByDescending(g => g.Sum(o => o.Amount)).ThenBy(g => g.Key).Skip(1).Take(3)
+                .Select(g => g.Key).ToString());
+
+        Assert.EndsWith("GROUP BY \"person_id\" HAVING 1 = 0", Orders.GroupBy(o => o.PersonId).OrderBy(g => g.Key).Take(0).Select(g => g.Key).ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Composite_keys_select_members_and_order_by_every_part()
+    {
+        Assert.Equal(
+            "SELECT \"mood\" AS \"Mood\", \"active\" AS \"Active\", MAX(\"age\") AS \"Oldest\" FROM \"micro_people\" GROUP BY \"mood\", \"active\" ORDER BY \"mood\", \"active\" DESC",
+            People.GroupBy(p => new { p.Mood, p.Active }).OrderBy(g => g.Key.Mood).ThenByDescending(g => g.Key.Active)
+                .Select(g => new { g.Key.Mood, g.Key.Active, Oldest = g.Max(p => p.Age) }).ToString());
+
+        Assert.EndsWith("ORDER BY \"mood\", \"active\"", People.GroupBy(p => new { p.Mood, p.Active }).OrderBy(g => g.Key).ToString(), StringComparison.Ordinal);
+        Assert.Throws<NotSupportedException>(() => People.GroupBy(p => new { p.Mood, p.Active }).Select(g => g.Key));
+    }
+
+    [Fact]
+    public void Computed_keys_are_computed_once_in_a_derived_table()
+    {
+        Assert.Equal(
+            "SELECT \"group_key0\" AS \"Parity\", COUNT(*) AS \"Count\" FROM (SELECT " + PersonColumns + ", (\"age\" % @p0) AS \"group_key0\" FROM \"micro_people\" WHERE (\"active\" = @p1)) AS \"grouped\" GROUP BY \"group_key0\"",
+            People.Where(p => p.Active).GroupBy(p => p.Age % 2).Select(g => new { Parity = g.Key, Count = g.Count() }).ToString());
+    }
+
+    [Fact]
+    public void A_paged_source_is_grouped_after_its_paging()
+    {
+        Assert.Equal(
+            "SELECT COUNT(*) AS \"value\" FROM (SELECT " + PersonColumns + ", \"active\" AS \"group_key0\" FROM \"micro_people\" ORDER BY \"age\" LIMIT 3) AS \"grouped\" GROUP BY \"group_key0\"",
+            People.OrderBy(p => p.Age).Take(3).GroupBy(p => p.Active).Select(g => g.Count()).ToString());
+    }
+
+    [Fact]
+    public void Unsupported_group_shapes_throw()
+    {
+        var groups = People.GroupBy(p => p.Mood);
+        Assert.Throws<NotSupportedException>(() => groups.Select(g => g));
+        Assert.Throws<NotSupportedException>(() => groups.Select(g => g.First()));
+        Assert.Throws<NotSupportedException>(() => groups.Having(g => Orders.Any(o => o.Amount > 1)));
+        Assert.Throws<NotSupportedException>(() => groups.Select(g => g.Key).Distinct().ToString());
+    }
+
     // ---- Distinct ------------------------------------------------------------------------------
 
     [Fact]

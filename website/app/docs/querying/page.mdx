@@ -23,6 +23,7 @@ var total = await active.CountAsync();
 | `ThenBy(c => c.X)` / `ThenByDescending` | adds a secondary sort key |
 | `Skip(n)` / `Take(n)` | paging in the dialect's syntax |
 | `IgnoreQueryFilters()` | skips the entity's [query filters](/docs/mapping/#query-filters) |
+| `GroupBy(c => c.X)` | `GROUP BY`; see [Grouping](#grouping) |
 
 ## Running a query
 
@@ -210,8 +211,40 @@ var moods = await people.Select(p => p.Mood).Distinct().ToListAsync();
 var cities = await customers.Select(c => c.City).Distinct().CountAsync();
 ```
 
-For joins, grouping and other shapes a single table can't express, write the SQL and materialize
-into a record (see also [Joins and result sets](/docs/joins-and-result-sets/)):
+## Grouping
+
+`GroupBy` groups the rows by a key. Select the key and aggregates from each group:
+
+```csharp
+// SELECT "customer_id" AS "CustomerId", COUNT(*) AS "Orders", COALESCE(SUM("amount"), 0) AS "Total"
+// FROM "orders" WHERE ("paid" = @p0) GROUP BY "customer_id" HAVING (COUNT(*) > @p1)
+// ORDER BY COALESCE(SUM("amount"), 0) DESC LIMIT 10
+var top = await db.Table<Order>()
+    .Where(o => o.Paid)
+    .GroupBy(o => o.CustomerId)
+    .Having(g => g.Count() > 1)
+    .OrderByDescending(g => g.Sum(o => o.Amount))
+    .Take(10)
+    .Select(g => new { CustomerId = g.Key, Orders = g.Count(), Total = g.Sum(o => o.Amount) })
+    .ToListAsync();
+```
+
+- `Where` before `GroupBy` filters rows. `Having` after it filters groups.
+- Sort and page groups with `OrderBy`, `ThenBy`, `Skip` and `Take` before `Select`.
+- Aggregates over a group: `g.Count()`, `g.Count(x => ...)`, `g.LongCount()`, `g.Sum(x => ...)`
+  (zero when every value is `NULL`, as in LINQ), `g.Min(x => ...)`, `g.Max(x => ...)` and
+  `g.Average(x => ...)` (integers averaged as floating point; decimals stay exact).
+- A composite key is an anonymous type: `GroupBy(p => new { p.Country, p.City })`, then select
+  `g.Key.Country` and `g.Key.City`. `OrderBy(g => g.Key)` sorts by each part.
+- A key can be computed, such as `GroupBy(p => p.CreatedAt.Year)`. Computed keys, and sources
+  with `Skip` or `Take`, are grouped through a derived table, so the key is computed once and
+  the page is taken before grouping, as in LINQ.
+- `CountAsync()` on a grouped query counts the groups.
+- Subqueries aren't supported inside grouped queries, and whole groups can't be selected
+  (`Select(g => g)`). Select the key and aggregates instead.
+
+For joins and other shapes a single table can't express, write the SQL and materialize into a
+record (see also [Joins and result sets](/docs/joins-and-result-sets/)):
 
 ```csharp
 public record CustomerTotal(int Id, string Name, decimal Spend);

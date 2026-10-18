@@ -4,8 +4,9 @@ using System.Diagnostics.CodeAnalysis;
 namespace MicroORM.Querying;
 
 /// <summary>
-/// A query that selects a projection of each row, created by <see cref="Query{T}.Select{TResult}"/>.
-/// Filter, sort and page the source query before calling <c>Select</c>.
+/// A query that selects a projection of each row, created by <see cref="Query{T}.Select{TResult}"/>
+/// or <see cref="GroupedQuery{TKey, T}.Select{TResult}"/>. Filter, sort and page the source query
+/// before calling <c>Select</c>.
 /// </summary>
 /// <typeparam name="T">The entity type of the source query.</typeparam>
 /// <typeparam name="TResult">The projected type.</typeparam>
