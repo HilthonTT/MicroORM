@@ -110,7 +110,7 @@ var trash = await db.Table<Post>().IgnoreQueryFilters().Where(p => p.IsDeleted).
 ```
 
 - Filters apply to everything built from `Table<T>()`: reads, aggregates, `FindAsync`,
-  `ExecuteUpdateAsync` and `ExecuteDeleteAsync`.
+  `ExecuteUpdateAsync`, `ExecuteDeleteAsync`, and subqueries over the entity.
 - They don't apply to raw SQL (`QueryAsync($"...")`), or to the single-entity writes `InsertAsync`,
   `UpdateAsync`, `DeleteAsync`, `DeleteByKeyAsync` and `UpsertAsync`, which act on the key they're
   given. Check ownership before you call those with a key from user input.

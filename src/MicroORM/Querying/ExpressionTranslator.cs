@@ -1,6 +1,7 @@
 using MicroORM.Dialects;
 using MicroORM.Mapping;
 using System.Collections;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 
@@ -12,20 +13,46 @@ namespace MicroORM.Querying;
 /// Unsupported shapes throw <see cref="NotSupportedException"/> rather than silently running
 /// client-side.
 /// </summary>
+/// <remarks>
+/// Inside a subquery, the parameter's columns are qualified with the subquery's alias and the
+/// enclosing entities are outer scopes.
+/// </remarks>
 internal sealed class ExpressionTranslator
 {
+    /// <summary>The column alias of a projection that selects one value.</summary>
+    internal const string ValueAlias = "value";
+
     private readonly EntityMap _map;
 
     private readonly ParameterExpression _entity;
 
     private readonly SqlDialect _dialect;
 
-    private ExpressionTranslator(EntityMap map, ParameterExpression entity, SqlDialect dialect)
+    /// <summary>Qualifies the entity's columns in a subquery; <see langword="null"/> at the top level.</summary>
+    private readonly string? _qualifier;
+
+    /// <summary>The entities of the enclosing queries, innermost first.</summary>
+    private readonly IReadOnlyList<Scope> _outer;
+
+    private readonly ParameterExpression[] _parameters;
+
+    private ExpressionTranslator(
+        EntityMap map,
+        ParameterExpression entity,
+        SqlDialect dialect,
+        string? qualifier = null,
+        IReadOnlyList<Scope>? outer = null)
     {
         _map = map;
         _entity = entity;
         _dialect = dialect;
+        _qualifier = qualifier;
+        _outer = outer ?? [];
+        _parameters = [entity, .. _outer.Select(s => s.Parameter)];
     }
+
+    /// <summary>How a subquery refers to this entity: by its alias, or at the top level by its table.</summary>
+    private string Reference => _qualifier ?? _map.Table;
 
     /// <summary>Translates a predicate (<c>x =&gt; bool</c>) into a <c>WHERE</c> condition.</summary>
     public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect) =>
@@ -34,6 +61,10 @@ internal sealed class ExpressionTranslator
     /// <summary>Translates a value expression (<c>x =&gt; x.Name</c>) into a SQL expression.</summary>
     public static Sql.Sql Value(LambdaExpression lambda, EntityMap map, SqlDialect dialect) =>
         new ExpressionTranslator(map, lambda.Parameters[0], dialect).Visit(lambda.Body);
+
+    /// <summary>Whether a <c>Select</c> lambda selects one value (aliased <see cref="ValueAlias"/>) rather than members.</summary>
+    public static bool SelectsSingleValue(LambdaExpression lambda) =>
+        lambda.Body is not (NewExpression { Members: not null } or NewExpression { Arguments.Count: > 0 } or MemberInitExpression);
 
     public static Sql.Sql SelectList(LambdaExpression lambda, EntityMap map, SqlDialect dialect)
     {
@@ -51,7 +82,7 @@ internal sealed class ExpressionTranslator
             MemberInitExpression init => ConstructorItems(init.NewExpression).Concat(init.Bindings.Select(b => b is MemberAssignment assignment
                 ? (assignment.Expression, assignment.Member.Name)
                 : throw Unsupported(body))),
-            _ => [(body, "value")],
+            _ => [(body, ValueAlias)],
         };
 
         return Sql.Sql.Join(", ", items.Select(item => Sql.Sql.Empty.Append(translator.Projected(item.Value)).Append(" AS ").AppendIdentifier(item.Alias)));
@@ -197,7 +228,14 @@ internal sealed class ExpressionTranslator
         {
             var column = _map.FindByProperty(node.Member.Name)
                 ?? throw new NotSupportedException($"'{_map.EntityType.Name}.{node.Member.Name}' is not a mapped column and cannot be used in a query.");
-            return Sql.Sql.Identifier(column.Name);
+            return Sql.Sql.Identifier(_qualifier is null ? column.Name : _qualifier + "." + column.Name);
+        }
+
+        if (node.Expression is ParameterExpression parameter && _outer.FirstOrDefault(s => s.Parameter == parameter) is { } scope)
+        {
+            var column = scope.Map.FindByProperty(node.Member.Name)
+                ?? throw new NotSupportedException($"'{scope.Map.EntityType.Name}.{node.Member.Name}' is not a mapped column and cannot be used in a query.");
+            return Sql.Sql.Identifier(scope.Reference + "." + column.Name);
         }
 
         if (node.Expression is not null && Nullable.GetUnderlyingType(node.Expression.Type) is not null)
@@ -250,6 +288,11 @@ internal sealed class ExpressionTranslator
     private Sql.Sql VisitCall(MethodCallExpression node)
     {
         var method = node.Method;
+
+        if (IsSubquery(node))
+        {
+            return Subquery(node);
+        }
 
         if (method.DeclaringType == typeof(string))
         {
@@ -335,6 +378,87 @@ internal sealed class ExpressionTranslator
         throw Unsupported(node);
     }
 
+    /// <summary>
+    /// Whether a call is a subquery: <c>query.Any(...)</c> on a typed query, or
+    /// <c>projection.Contains(value)</c> on a projection.
+    /// </summary>
+    internal static bool IsSubquery(MethodCallExpression node) =>
+        node.Object is not null &&
+        node.Method.DeclaringType is { IsGenericType: true } type &&
+        ((type.GetGenericTypeDefinition() == typeof(Query<>) && node.Method.Name == nameof(Query<object>.Any)) ||
+         (type.GetGenericTypeDefinition() == typeof(Projection<,>) && node.Method.Name == nameof(Projection<object, object>.Contains)));
+
+    /// <summary>
+    /// Translates <c>query.Any(x =&gt; ...)</c> into <c>EXISTS (...)</c>, its predicate correlated to the
+    /// enclosing rows, and <c>projection.Contains(value)</c> into an <c>EXISTS</c> matching the value,
+    /// <c>NULL</c> included as in C# (with <c>IN</c>, a <c>NULL</c> would make <c>NOT</c> match nothing).
+    /// A filtered or paged source is a derived table, so its own filters and paging stay inside it.
+    /// </summary>
+    private Sql.Sql Subquery(MethodCallExpression node)
+    {
+        if (EntityFinder.Finds(node.Object!, _parameters, subqueries: false))
+        {
+            throw new NotSupportedException($"MicroORM cannot translate '{node}': the subquery itself can't depend on the row. Correlate it in the predicate instead, such as orders.Any(o => o.CustomerId == c.Id).");
+        }
+
+        // One alias per nesting level: a subquery's own subqueries are one level deeper.
+        var alias = "s" + _outer.Count.ToString(CultureInfo.InvariantCulture);
+        var exists = Sql.Sql.Empty.Append("EXISTS (SELECT 1 FROM ");
+        switch (Evaluate(node.Object!))
+        {
+            case ISubquerySource query:
+                RequireSameDialect(query.Session.Dialect, node);
+                exists.Append(query.FromItem(alias));
+                if (node.Arguments.Count == 1)
+                {
+                    var predicate = (LambdaExpression)StripQuote(node.Arguments[0]);
+                    var nested = new ExpressionTranslator(query.Map, predicate.Parameters[0], _dialect, qualifier: alias, outer: [new Scope(_entity, _map, Reference), .. _outer]);
+                    exists.Append(" WHERE ").Append(nested.Condition(predicate.Body));
+                }
+
+                return exists.Append(")");
+            case IValueSubquerySource projection:
+                RequireSameDialect(projection.Session.Dialect, node);
+                if (!projection.SelectsSingleValue)
+                {
+                    throw new NotSupportedException($"MicroORM cannot translate '{node}': Contains needs a projection of one value, such as orders.Select(o => o.CustomerId).");
+                }
+
+                var column = Sql.Sql.Identifier(alias + "." + ValueAlias);
+                var item = node.Arguments[0];
+                Sql.Sql match;
+                if (!DependsOnEntity(item))
+                {
+                    var value = Evaluate(item);
+                    match = value is null
+                        ? Sql.Sql.Empty.Append("(").Append(column).Append(" IS NULL)")
+                        : Sql.Sql.Empty.Append("(").Append(column).Append(" = ").Append(Parameter(value, item.Type)).Append(")");
+                }
+                else
+                {
+                    // Qualified, so a column of the subquery can't shadow this row's.
+                    var value = new ExpressionTranslator(_map, _entity, _dialect, qualifier: Reference, outer: _outer).Visit(item);
+                    var type = StripConvert(item).Type;
+                    match = type.IsValueType && Nullable.GetUnderlyingType(type) is null
+                        ? Sql.Sql.Empty.Append("(").Append(column).Append(" = ").Append(value).Append(")")
+                        : Sql.Sql.Empty.Append("(").Append(column).Append(" = ").Append(value)
+                            .Append(" OR (").Append(column).Append(" IS NULL AND ").Append(value).Append(" IS NULL))");
+                }
+
+                return exists.Append(projection.FromItem(alias)).Append(" WHERE ").Append(match).Append(")");
+            default:
+                throw Unsupported(node);
+        }
+    }
+
+    private void RequireSameDialect(SqlDialect dialect, Expression node)
+    {
+        if (!ReferenceEquals(dialect, _dialect))
+        {
+            throw new NotSupportedException($"MicroORM cannot translate '{node}': the subquery is for {dialect}, but the query for {_dialect}.");
+        }
+    }
+
     private Sql.Sql Function(string name, Expression argument) =>
         Sql.Sql.Empty.Append(name + "(").Append(Visit(argument)).Append(")");
 
@@ -410,7 +534,10 @@ internal sealed class ExpressionTranslator
 
     private bool IsNullValue(Expression node) => !DependsOnEntity(node) && Evaluate(node) is null;
 
-    private bool DependsOnEntity(Expression node) => EntityFinder.Finds(node, _entity);
+    private bool DependsOnEntity(Expression node) => EntityFinder.Finds(node, _parameters, subqueries: true);
+
+    private static Expression StripQuote(Expression node) =>
+        node is UnaryExpression { NodeType: ExpressionType.Quote } quote ? quote.Operand : node;
 
     private static Expression StripConvert(Expression node)
     {
@@ -453,5 +580,8 @@ internal sealed class ExpressionTranslator
     }
 
     private static NotSupportedException Unsupported(Expression node) =>
-      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains. Use .Where($\"...\") for anything else.");
+      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains, and subqueries (query.Any, projection.Contains). Use .Where($\"...\") for anything else.");
+
+    /// <summary>An entity of an enclosing query, which a subquery refers to by <paramref name="Reference"/> (its alias or table).</summary>
+    private sealed record Scope(ParameterExpression Parameter, EntityMap Map, string Reference);
 }

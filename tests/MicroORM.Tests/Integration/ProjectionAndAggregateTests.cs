@@ -54,4 +54,27 @@ public class ProjectionAndAggregateTests
         Assert.Null(await nobody.MaxAsync(p => (int?)p.Age));
         Assert.Null(await nobody.AverageAsync(p => p.Age));
     }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Distinct_projections(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        var people = database.Db.Table<Person>();
+
+        Assert.Equal([Mood.Calm, Mood.Happy, Mood.Grumpy], (await people.Select(p => p.Mood).Distinct().ToListAsync()).Order());
+        Assert.Equal(3, await people.Select(p => p.Mood).Distinct().CountAsync());
+        Assert.Equal(5, await people.Select(p => p.Mood).CountAsync());
+
+        // An ordering before Distinct is dropped rather than rejected by the database.
+        Assert.Equal(3, (await people.OrderBy(p => p.Name).Select(p => p.Mood).Distinct().ToListAsync()).Count);
+
+        // Paging applies first, as in LINQ: the three youngest have two moods.
+        Assert.Equal(2, await people.OrderBy(p => p.Age).Take(3).Select(p => p.Mood).Distinct().CountAsync());
+
+        // Single applies to the distinct values: under 40, people are active and inactive.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => people.Where(p => p.Age < 40).Select(p => p.Active).Distinct().SingleAsync());
+        Assert.True(await people.Where(p => p.Mood == Mood.Happy).Select(p => p.Active).Distinct().SingleAsync());
+        Assert.Equal("Ada", people.Where(p => p.Name == "Ada").Select(p => p.Name).Distinct().FirstOrDefault());
+    }
 }

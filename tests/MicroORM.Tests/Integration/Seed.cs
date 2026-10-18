@@ -35,4 +35,20 @@ internal static class Seed
         database.Log.Clear();
         return database;
     }
+
+    /// <summary>Orders for <see cref="PeopleAsync"/>'s people: Ada 10, 25 and 30; Cleo 40; Dmitri 5; and 99 with no person.</summary>
+    public static async Task OrdersAsync(TestDatabase database)
+    {
+        var ids = (await database.Db.Table<Person>().IgnoreQueryFilters().ToListAsync()).ToDictionary(p => p.Name, p => p.Id);
+        await database.Db.Table<Order>().InsertManyAsync(
+        [
+            new Order { PersonId = ids["Ada"], Amount = 10 },
+            new Order { PersonId = ids["Ada"], Amount = 25 },
+            new Order { PersonId = ids["Ada"], Amount = 30 },
+            new Order { PersonId = ids["Cleo"], Amount = 40 },
+            new Order { PersonId = ids["Dmitri"], Amount = 5 },
+            new Order { PersonId = null, Amount = 99 },
+        ]);
+        database.Log.Clear();
+    }
 }

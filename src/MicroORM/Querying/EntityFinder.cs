@@ -2,16 +2,28 @@ using System.Linq.Expressions;
 
 namespace MicroORM.Querying;
 
+/// <summary>Finds whether an expression references any of the given parameters (or, optionally, contains a subquery).</summary>
 internal sealed class EntityFinder : ExpressionVisitor
 {
-    private readonly ParameterExpression _entity;
+    private readonly IReadOnlyCollection<ParameterExpression> _parameters;
+    private readonly bool _subqueries;
     private bool _found;
 
-    private EntityFinder(ParameterExpression entity) => _entity = entity;
-
-    public static bool Finds(Expression node, ParameterExpression entity)
+    private EntityFinder(IReadOnlyCollection<ParameterExpression> parameters, bool subqueries)
     {
-        var finder = new EntityFinder(entity);
+        _parameters = parameters;
+        _subqueries = subqueries;
+    }
+
+    /// <param name="node">The expression to search.</param>
+    /// <param name="parameters">The parameters that make an expression depend on the row.</param>
+    /// <param name="subqueries">
+    /// Whether a subquery counts as found too, so it is translated rather than evaluated (which
+    /// would run it while the outer query is being built).
+    /// </param>
+    public static bool Finds(Expression node, IReadOnlyCollection<ParameterExpression> parameters, bool subqueries)
+    {
+        var finder = new EntityFinder(parameters, subqueries);
         finder.Visit(node);
         return finder._found;
     }
@@ -20,7 +32,13 @@ internal sealed class EntityFinder : ExpressionVisitor
 
     protected override Expression VisitParameter(ParameterExpression node)
     {
-        _found |= node == _entity;
+        _found |= _parameters.Contains(node);
         return node;
+    }
+
+    protected override Expression VisitMethodCall(MethodCallExpression node)
+    {
+        _found |= _subqueries && ExpressionTranslator.IsSubquery(node);
+        return base.VisitMethodCall(node);
     }
 }

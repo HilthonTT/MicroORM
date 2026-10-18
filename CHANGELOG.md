@@ -9,6 +9,8 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - Query filters: `EntityBuilder<T>.HasQueryFilter(x => ...)` adds a condition (such as a soft delete or a tenant) to every typed query, `Find`, `ExecuteUpdate` and `ExecuteDelete` of the entity. Captured values are read per statement. `Query<T>.IgnoreQueryFilters()` skips them.
+- Subqueries in predicates and projections: `query.Any(x => ...)` becomes a correlated `EXISTS`, and `projection.Contains(value)` an `EXISTS` that matches `NULL` like C#. Filtered and paged subqueries keep their filters and paging inside a derived table. `Query<T>.AnyAsync(predicate)` and `Any(predicate)` also run on their own.
+- `Projection.Distinct()`, `CountAsync()` and `ContainsAsync(value)`.
 - `InsertMany` batches rows: one multi-row `INSERT` per batch without generated keys, and otherwise one command per batch with every key read back. Batch sizes follow `SqlDialect.MaxParameters`, with at most 1000 rows per batch.
 - Partial updates: `UpdateAsync(entity, e => new { e.A, e.B })` writes only the chosen columns, and still checks and increments a version.
 - `ExecuteUpdateReturningAsync` returns the updated rows, through `RETURNING` (SQLite, PostgreSQL) or `OUTPUT` (SQL Server). On MySQL it throws `NotSupportedException`.

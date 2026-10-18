@@ -33,7 +33,7 @@ var total = await active.CountAsync();
 | `FirstOrDefaultAsync()` / `FirstOrDefaultAsync(c => ...)` | `T?` |
 | `SingleAsync()` | `T`; throws on zero or several rows |
 | `CountAsync()` | `long` |
-| `AnyAsync()` | `bool` |
+| `AnyAsync()` / `AnyAsync(c => ...)` | `bool` |
 | `SumAsync(c => ...)` | the sum; `0` when there are no rows |
 | `MinAsync(c => ...)` / `MaxAsync(c => ...)` | the extreme value; `default` (`null` for nullable selectors) when there are no rows |
 | `AverageAsync(c => ...)` | `double?`; integers are averaged without truncation; `null` when there are no rows |
@@ -75,6 +75,8 @@ subset, use `Where($"...")`.
 | `d.Year`, `Month`, `Day`, `Hour`, `Minute`, `Second` on `DateTime` (and the date parts of `DateOnly`) | `EXTRACT`, `DATEPART` or `strftime` |
 | `Math.Abs(x)`, `Math.Floor(x)`, `Math.Ceiling(x)` | `ABS`, `FLOOR`, `CEILING` |
 | `list.Contains(c.X)`, `array.Contains(c.X)` | `X IN (@p0, @p1, ...)` |
+| `query.Any(o => ...)`, `query.Any()` on another typed query | `EXISTS (SELECT 1 FROM ...)`; see [Subqueries](#subqueries) |
+| `projection.Contains(c.X)` on a one-value projection | `EXISTS (...)` matching the value |
 | Captured variables, constants, method calls that don't use the row | evaluated in .NET and sent as parameters |
 
 ```csharp
@@ -141,6 +143,39 @@ var debited = await db.Table<Account>()
 MySQL and MariaDB can't return updated rows, so there it throws `NotSupportedException`. On SQL
 Server, `OUTPUT` fails on a table with triggers.
 
+## Subqueries
+
+`Any` on another typed query becomes `EXISTS`. Its predicate can use the outer row, so the
+subquery is correlated:
+
+```csharp
+var orders = db.Table<Order>();
+
+// WHERE EXISTS (SELECT 1 FROM "orders" AS "s0" WHERE ("s0"."customer_id" = "customers"."id"))
+var buyers = await db.Table<Customer>().Where(c => orders.Any(o => o.CustomerId == c.Id)).ToListAsync();
+
+// NOT EXISTS, with the subquery's own filter kept inside it.
+var bigSpenders = orders.Where(o => o.Amount > 1_000);
+var others = await db.Table<Customer>().Where(c => !bigSpenders.Any(o => o.CustomerId == c.Id)).ToListAsync();
+
+// Contains on a projection of one value.
+var ordered = orders.Select(o => o.CustomerId);
+var withOrders = await db.Table<Customer>().Where(c => ordered.Contains(c.Id)).ToListAsync();
+```
+
+- A subquery that has `Where`, `Skip` or `Take` becomes a derived table, so its own filters
+  (including [query filters](/docs/mapping/#query-filters)) and paging apply inside it, as in LINQ.
+- `Contains` is translated to `EXISTS`, not `IN`, and matches `NULL` the way C# does. With
+  `NOT IN`, a single `NULL` in the subquery would make the condition match nothing.
+- Subqueries nest. Each level gets its own alias (`s0`, `s1`, ...), so a query can refer to the
+  same table it's filtering.
+- Subqueries also work in `Select`, where they become `CASE WHEN EXISTS (...) THEN 1 ELSE 0 END`,
+  and in `ExecuteUpdate` and `ExecuteDelete`.
+- The subquery itself can't depend on the row: correlate in the predicate
+  (`orders.Any(o => o.CustomerId == c.Id)`), not with `orders.Where(o => o.CustomerId == c.Id).Any()`.
+  Both queries must come from databases with the same dialect.
+- A subquery is always translated, never run while the outer query is being built.
+
 ## Projections
 
 `Select` chooses what each row returns. Filter, sort and page first, then project:
@@ -161,6 +196,19 @@ var emails = await people.Where(p => p.Email != null).Select(p => p.Email).ToLis
 Each projected value can use anything from [What translates](#what-translates). Conditions
 become `CASE WHEN ... THEN 1 ELSE 0 END`, because SQL Server doesn't allow a bare predicate in a
 `SELECT` list.
+
+A projection has the terminal methods of a query, and a few of its own:
+
+| Method | What it does |
+|---|---|
+| `Distinct()` | `SELECT DISTINCT`. After `Skip` or `Take`, the page is taken first, as in LINQ. Any other ordering is dropped, because distinct rows have no order. |
+| `CountAsync()` | counts the projected rows (the distinct ones after `Distinct()`) |
+| `ContainsAsync(value)` | whether a one-value projection contains `value` (`null` included) |
+
+```csharp
+var moods = await people.Select(p => p.Mood).Distinct().ToListAsync();
+var cities = await customers.Select(c => c.City).Distinct().CountAsync();
+```
 
 For joins, grouping and other shapes a single table can't express, write the SQL and materialize
 into a record (see also [Joins and result sets](/docs/joins-and-result-sets/)):

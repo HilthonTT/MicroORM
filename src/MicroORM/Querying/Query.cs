@@ -12,7 +12,7 @@ namespace MicroORM.Querying;
 /// <see cref="ToList"/>) is called.
 /// </summary>
 /// <typeparam name="T">The entity type.</typeparam>
-public class Query<T>
+public class Query<T> : IProjectionSource, ISubquerySource
     where T : class
 {
     private readonly IReadOnlyList<Sql.Sql> _filters;
@@ -42,9 +42,13 @@ public class Query<T>
 
     internal MicroSession Session { get; }
 
-    private SqlDialect Dialect => Session.Dialect;
+    MicroSession IProjectionSource.Session => Session;
 
-    private bool IsPaged => _skip is not null || _take is not null;
+    MicroSession ISubquerySource.Session => Session;
+
+    internal SqlDialect Dialect => Session.Dialect;
+
+    internal bool IsPaged => _skip is not null || _take is not null;
 
     /// <summary>
     /// The mapping's query filters, translated now so captured values (such as the current tenant)
@@ -53,6 +57,10 @@ public class Query<T>
     private IReadOnlyList<Sql.Sql> Filters => _ignoreQueryFilters || Map.QueryFilters.Count == 0
         ? _filters
         : [.. Map.QueryFilters.Select(f => ExpressionTranslator.Predicate(f, Map, Dialect)), .. _filters];
+
+    private bool HasFilters => _filters.Count > 0 || (!_ignoreQueryFilters && Map.QueryFilters.Count > 0);
+
+    private Sql.Sql AllColumns => Sql.Sql.Join(", ", Map.Columns.Select(c => Sql.Sql.Identifier(c.Name)));
 
     // ---- Composition ---------------------------------------------------------------------------
 
@@ -115,7 +123,7 @@ public class Query<T>
     public Projection<T, TResult> Select<TResult>(Expression<Func<T, TResult>> selector)
     {
         ArgumentNullException.ThrowIfNull(selector);
-        return new Projection<T, TResult>(this, ExpressionTranslator.SelectList(selector, Map, Dialect));
+        return new Projection<T, TResult>(this, ExpressionTranslator.SelectList(selector, Map, Dialect), ExpressionTranslator.SelectsSingleValue(selector));
     }
 
     /// <summary>Caps the number of rows without raising a smaller <see cref="Take"/> already set.</summary>
@@ -176,6 +184,17 @@ public class Query<T>
 
     /// <summary>Returns whether any row matches.</summary>
     public bool Any() => MicroSession.Sync(Session.ScalarCore<bool>(false, AnySql(), default));
+
+    /// <summary>Returns whether any row matches <paramref name="predicate"/>.</summary>
+    public Task<bool> AnyAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        Where(predicate).AnyAsync(cancellationToken);
+
+    /// <summary>
+    /// Returns whether any row matches <paramref name="predicate"/>. Inside another query's
+    /// predicate it becomes an <c>EXISTS</c> subquery, and the predicate may use the outer row:
+    /// <c>customers.Where(c =&gt; orders.Any(o =&gt; o.CustomerId == c.Id))</c>.
+    /// </summary>
+    public bool Any(Expression<Func<T, bool>> predicate) => Where(predicate).Any();
 
     /// <summary>Sums a value over the rows; an empty set sums to zero.</summary>
     public async Task<TResult> SumAsync<TResult>(Expression<Func<T, TResult>> selector, CancellationToken cancellationToken = default) =>
@@ -244,16 +263,46 @@ public class Query<T>
     // ---- SQL -----------------------------------------------------------------------------------
 
     /// <summary>Builds the <c>SELECT</c> statement without running it.</summary>
-    public Sql.Sql ToSql() => SelectSql(Sql.Sql.Join(", ", Map.Columns.Select(c => Sql.Sql.Identifier(c.Name))));
+    public Sql.Sql ToSql() => SelectSql(AllColumns);
 
     /// <inheritdoc />
     public override string ToString() => ToSql().Render(Dialect).Text;
 
-    internal Sql.Sql SelectSql(Sql.Sql selectList)
+    /// <param name="selectList">The selected values.</param>
+    /// <param name="ordered">Whether to keep the ordering when there is no paging; see <see cref="IProjectionSource.SelectSql"/>.</param>
+    internal Sql.Sql SelectSql(Sql.Sql selectList, bool ordered = true) => SelectSql(selectList, ordered, distinct: false);
+
+    Sql.Sql IProjectionSource.SelectSql(Sql.Sql selectList, bool distinct, int? limit, bool ordered)
+    {
+        if (!distinct)
+        {
+            return (limit is int count ? Limit(count) : this).SelectSql(selectList, ordered);
+        }
+
+        if (limit is null)
+        {
+            return DistinctSql(selectList);
+        }
+
+        // The limit applies to the distinct rows, outside them: SQL Server can't page a DISTINCT
+        // with its "ORDER BY (SELECT NULL)".
+        var sql = Sql.Sql.Empty.Append("SELECT * FROM (").Append(DistinctSql(selectList)).Append(") AS ").AppendIdentifier("distinct_rows");
+        Dialect.AppendPaging(sql, null, limit, hasOrderBy: false);
+        return sql;
+    }
+
+    Sql.Sql ISubquerySource.FromItem(string alias) => !IsPaged && !HasFilters
+        ? Sql.Sql.Identifier(Map.Table).Append(" AS ").AppendIdentifier(alias)
+        : Sql.Sql.Empty.Append("(").Append(SelectSql(AllColumns, ordered: false)).Append(") AS ").AppendIdentifier(alias);
+
+    /// <summary>The <c>WHERE</c> clause of the filters (empty without filters); paging is not included.</summary>
+    internal Sql.Sql WhereClause() => WhereClause(Filters);
+
+    private Sql.Sql SelectSql(Sql.Sql selectList, bool ordered, bool distinct)
     {
         // Take(0) becomes an always-false filter with no ORDER BY or paging: SQL Server rejects
         // "FETCH NEXT 0 ROWS", and ORDER BY without paging inside a subquery (Count, Any).
-        var sql = Sql.Sql.Empty.Append("SELECT ").Append(selectList).Append(" FROM ").AppendIdentifier(Map.Table);
+        var sql = Sql.Sql.Empty.Append(distinct ? "SELECT DISTINCT " : "SELECT ").Append(selectList).Append(" FROM ").AppendIdentifier(Map.Table);
         var filters = Filters;
         if (_take == 0)
         {
@@ -261,16 +310,24 @@ public class Query<T>
         }
 
         sql.Append(WhereClause(filters));
-        if (_ordering.Count > 0)
+        var orderBy = _ordering.Count > 0 && (ordered || IsPaged);
+        if (orderBy)
         {
             sql.Append(" ORDER BY ").Append(Sql.Sql.Join(", ", _ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression)));
         }
 
-        Dialect.AppendPaging(sql, _skip, _take, _ordering.Count > 0);
+        Dialect.AppendPaging(sql, _skip, _take, orderBy);
         return sql;
     }
 
-    private Sql.Sql WhereClause() => WhereClause(Filters);
+    /// <summary>
+    /// Selects distinct rows. Like LINQ's <c>Take(n).Select(...).Distinct()</c>, a paged query is
+    /// paged first, in a derived table. Otherwise the ordering is dropped, as in EF Core: DISTINCT
+    /// keeps no order, and PostgreSQL and SQL Server reject ordering by a column it doesn't select.
+    /// </summary>
+    private Sql.Sql DistinctSql(Sql.Sql selectList) => IsPaged
+        ? Sql.Sql.Empty.Append("SELECT DISTINCT ").Append(selectList).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier("paged")
+        : SelectSql(selectList, ordered: false, distinct: true);
 
     private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
         ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))

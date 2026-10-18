@@ -24,8 +24,6 @@ public sealed class Table<T> : Query<T>
     {
     }
 
-    private SqlDialect Dialect => Session.Dialect;
-
     /// <summary>Inserts an entity. A database-generated key is read back and assigned to the entity.</summary>
     public Task InsertAsync(T entity, CancellationToken cancellationToken = default) => InsertCore(true, entity, cancellationToken).AsTask();
 
