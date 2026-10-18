@@ -62,9 +62,12 @@ public sealed class TestDatabase : IAsyncDisposable
         .AddTypeHandler(new JsonbHandler<Address>())
         .AddJsonColumn<List<string>>();
 
-    public static async Task<TestDatabase> CreateAsync(string provider)
+    /// <param name="provider">The provider name.</param>
+    /// <param name="configure">Changes to the options, such as query filters.</param>
+    public static async Task<TestDatabase> CreateAsync(string provider, Action<MicroOptions>? configure = null)
     {
         var options = CreateOptions();
+        configure?.Invoke(options);
         TestDatabase database;
 
         switch (provider)

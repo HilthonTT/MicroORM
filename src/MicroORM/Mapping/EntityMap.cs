@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 
 namespace MicroORM.Mapping;
@@ -8,8 +9,9 @@ public sealed class EntityMap
 {
     private readonly Dictionary<string, ColumnMap> _byProperty;
 
-    internal EntityMap(Type entityType, string table, IReadOnlyList<ColumnMap> columns, IReadOnlyList<ColumnMap> keys)
+    internal EntityMap(Type entityType, string table, IReadOnlyList<ColumnMap> columns, IReadOnlyList<ColumnMap> keys, IReadOnlyList<LambdaExpression> queryFilters)
     {
+        QueryFilters = queryFilters;
         EntityType = entityType;
         Table = table;
         Columns = columns;
@@ -36,6 +38,9 @@ public sealed class EntityMap
 
     /// <summary>Gets the database-generated identity column, if any.</summary>
     public ColumnMap? Identity { get; }
+
+    /// <summary>Gets the filters every typed query applies (<c>x =&gt; bool</c>), from <c>HasQueryFilter</c>.</summary>
+    internal IReadOnlyList<LambdaExpression> QueryFilters { get; }
 
     /// <summary>Gets the column mapped from a property, or <see langword="null"/> when it isn't mapped.</summary>
     public ColumnMap? FindByProperty(string propertyName) => _byProperty.GetValueOrDefault(propertyName);

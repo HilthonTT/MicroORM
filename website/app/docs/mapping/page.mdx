@@ -92,6 +92,33 @@ var options = new MicroOptions()
 Configure entities before creating the `MicroDb`. Mappings are built on first use and cached for
 the lifetime of the `MicroDb`.
 
+## Query filters
+
+A query filter is a condition that every typed query of an entity applies, such as a soft delete
+or a tenant:
+
+```csharp
+var options = new MicroOptions()
+    .Entity<Post>(e => e
+        .HasQueryFilter(p => !p.IsDeleted)
+        .HasQueryFilter(p => p.TenantId == tenants.CurrentId));
+
+var posts = await db.Table<Post>().Where(p => p.Published).ToListAsync();
+// WHERE (NOT (("is_deleted" = @p0))) AND ("tenant_id" = @p1) AND ("published" = @p2)
+
+var trash = await db.Table<Post>().IgnoreQueryFilters().Where(p => p.IsDeleted).ToListAsync();
+```
+
+- Filters apply to everything built from `Table<T>()`: reads, aggregates, `FindAsync`,
+  `ExecuteUpdateAsync` and `ExecuteDeleteAsync`.
+- They don't apply to raw SQL (`QueryAsync($"...")`), or to the single-entity writes `InsertAsync`,
+  `UpdateAsync`, `DeleteAsync`, `DeleteByKeyAsync` and `UpsertAsync`, which act on the key they're
+  given. Check ownership before you call those with a key from user input.
+- Captured values, such as `tenants.CurrentId`, are read each time a statement is built, so a
+  long-lived `Table<T>` always uses the current tenant.
+- Several filters are joined with `AND`. `IgnoreQueryFilters()` skips all of them, but keeps the
+  query's own `Where` filters.
+
 ## Inspecting a mapping
 
 ```csharp

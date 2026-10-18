@@ -1,3 +1,4 @@
+using MicroORM.Configuration;
 using MicroORM.Tests.Model;
 
 namespace MicroORM.Tests.Integration;
@@ -20,9 +21,9 @@ internal static class Seed
     /// <summary>
     /// Five people. By age: Brendan 17, Dmitri 29, Ada 36, "50% Eve_" 41, Cleo 52 (sum 175, average 35).
     /// </summary>
-    public static async Task<TestDatabase> PeopleAsync(string provider)
+    public static async Task<TestDatabase> PeopleAsync(string provider, Action<MicroOptions>? configure = null)
     {
-        var database = await TestDatabase.CreateAsync(provider);
+        var database = await TestDatabase.CreateAsync(provider, configure);
         await database.Db.Table<Person>().InsertManyAsync(
         [
             NewPerson("Ada", 36, mood: Mood.Happy, email: "ada@example.com"),

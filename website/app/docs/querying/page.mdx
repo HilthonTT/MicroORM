@@ -22,6 +22,7 @@ var total = await active.CountAsync();
 | `OrderBy(c => c.X)` / `OrderByDescending` | `ORDER BY`; replaces any previous ordering |
 | `ThenBy(c => c.X)` / `ThenByDescending` | adds a secondary sort key |
 | `Skip(n)` / `Take(n)` | paging in the dialect's syntax |
+| `IgnoreQueryFilters()` | skips the entity's [query filters](/docs/mapping/#query-filters) |
 
 ## Running a query
 

@@ -75,6 +75,21 @@ public sealed class EntityBuilder<T> : EntityConfiguration
         return this;
     }
 
+    /// <summary>
+    /// Adds a filter that typed queries of <typeparamref name="T"/> always apply, such as a soft
+    /// delete (<c>x =&gt; !x.IsDeleted</c>) or a tenant (<c>x =&gt; x.TenantId == tenants.Current</c>).
+    /// It applies to reads, <c>Find</c>, <c>ExecuteUpdate</c> and <c>ExecuteDelete</c>, but not to raw
+    /// SQL or to the single-entity writes, which act on the key they are given. Captured values are
+    /// read each time a statement is built. Several filters are combined with <c>AND</c>; a query
+    /// skips them with <c>IgnoreQueryFilters()</c>.
+    /// </summary>
+    public EntityBuilder<T> HasQueryFilter(Expression<Func<T, bool>> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        QueryFilters.Add(filter);
+        return this;
+    }
+
     internal static List<string> PropertyNames(LambdaExpression expression)
     {
         ArgumentNullException.ThrowIfNull(expression, nameof(expression));

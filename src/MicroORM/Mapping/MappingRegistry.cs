@@ -55,7 +55,7 @@ internal sealed class MappingRegistry
         }).ToList();
 
         List<ColumnMap> keys = keyNames.Select(name => columns.First(c => c.Property.Name == name)).ToList();
-        return new EntityMap(type, table, columns, keys);
+        return new EntityMap(type, table, columns, keys, config?.QueryFilters.ToList() ?? []);
     }
 
     private static List<string> FindKeys(Type type, List<PropertyInfo> properties, EntityConfiguration? config)

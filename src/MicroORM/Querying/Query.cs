@@ -19,13 +19,14 @@ public class Query<T>
     private readonly IReadOnlyList<(Sql.Sql Expression, bool Descending)> _ordering;
     private readonly int? _skip;
     private readonly int? _take;
+    private readonly bool _ignoreQueryFilters;
 
     internal Query(MicroSession session, EntityMap map)
-        : this(session, map, [], [], null, null)
+        : this(session, map, [], [], null, null, false)
     {
     }
 
-    private Query(MicroSession session, EntityMap map, IReadOnlyList<Sql.Sql> filters, IReadOnlyList<(Sql.Sql, bool)> ordering, int? skip, int? take)
+    private Query(MicroSession session, EntityMap map, IReadOnlyList<Sql.Sql> filters, IReadOnlyList<(Sql.Sql, bool)> ordering, int? skip, int? take, bool ignoreQueryFilters)
     {
         Session = session;
         Map = map;
@@ -33,6 +34,7 @@ public class Query<T>
         _ordering = ordering;
         _skip = skip;
         _take = take;
+        _ignoreQueryFilters = ignoreQueryFilters;
     }
 
     /// <summary>Gets the mapping of <typeparamref name="T"/>.</summary>
@@ -43,6 +45,14 @@ public class Query<T>
     private SqlDialect Dialect => Session.Dialect;
 
     private bool IsPaged => _skip is not null || _take is not null;
+
+    /// <summary>
+    /// The mapping's query filters, translated now so captured values (such as the current tenant)
+    /// are read for every statement, followed by the query's own filters.
+    /// </summary>
+    private IReadOnlyList<Sql.Sql> Filters => _ignoreQueryFilters || Map.QueryFilters.Count == 0
+        ? _filters
+        : [.. Map.QueryFilters.Select(f => ExpressionTranslator.Predicate(f, Map, Dialect)), .. _filters];
 
     // ---- Composition ---------------------------------------------------------------------------
 
@@ -63,6 +73,12 @@ public class Query<T>
         return condition.IsEmpty ? this : Filter(Sql.Sql.Empty.Append("(").Append(condition).Append(")"));
     }
 
+    /// <summary>
+    /// Skips the query filters configured with <c>HasQueryFilter</c>, for example to read
+    /// soft-deleted rows. Filters added with <see cref="Where(Expression{Func{T, bool}})"/> still apply.
+    /// </summary>
+    public Query<T> IgnoreQueryFilters() => new(Session, Map, _filters, _ordering, _skip, _take, true);
+
     /// <summary>Sorts ascending by a key, replacing any previous ordering.</summary>
     public Query<T> OrderBy<TKey>(Expression<Func<T, TKey>> key) => Order(key, descending: false, replace: true);
 
@@ -82,7 +98,7 @@ public class Query<T>
 
         // Skipping within a page shrinks the page: Take(10).Skip(5) is 5 rows, not 10.
         var skip = (int)Math.Min((long)(_skip ?? 0) + count, int.MaxValue);
-        return new(Session, Map, _filters, _ordering, skip, _take is int take ? Math.Max(take - count, 0) : null);
+        return new(Session, Map, _filters, _ordering, skip, _take is int take ? Math.Max(take - count, 0) : null, _ignoreQueryFilters);
     }
 
     /// <summary>Limits the number of rows. Like LINQ, it never raises an earlier, smaller Take.</summary>
@@ -104,9 +120,9 @@ public class Query<T>
 
     /// <summary>Caps the number of rows without raising a smaller <see cref="Take"/> already set.</summary>
     internal Query<T> Limit(int count) =>
-        new(Session, Map, _filters, _ordering, _skip, _take is int take ? Math.Min(take, count) : count);
+        new(Session, Map, _filters, _ordering, _skip, _take is int take ? Math.Min(take, count) : count, _ignoreQueryFilters);
 
-    private Query<T> Filter(Sql.Sql condition) => new(Session, Map, [.. _filters, condition], _ordering, _skip, _take);
+    private Query<T> Filter(Sql.Sql condition) => new(Session, Map, [.. _filters, condition], _ordering, _skip, _take, _ignoreQueryFilters);
 
     // ---- Rows ----------------------------------------------------------------------------------
 
@@ -225,12 +241,13 @@ public class Query<T>
         // Take(0) becomes an always-false filter with no ORDER BY or paging: SQL Server rejects
         // "FETCH NEXT 0 ROWS", and ORDER BY without paging inside a subquery (Count, Any).
         var sql = Sql.Sql.Empty.Append("SELECT ").Append(selectList).Append(" FROM ").AppendIdentifier(Map.Table);
+        var filters = Filters;
         if (_take == 0)
         {
-            return sql.Append(WhereClause([.. _filters, Sql.Sql.Raw("1 = 0")]));
+            return sql.Append(WhereClause([.. filters, Sql.Sql.Raw("1 = 0")]));
         }
 
-        sql.Append(WhereClause());
+        sql.Append(WhereClause(filters));
         if (_ordering.Count > 0)
         {
             sql.Append(" ORDER BY ").Append(Sql.Sql.Join(", ", _ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression)));
@@ -240,7 +257,7 @@ public class Query<T>
         return sql;
     }
 
-    private Sql.Sql WhereClause() => WhereClause(_filters);
+    private Sql.Sql WhereClause() => WhereClause(Filters);
 
     private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
         ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))
@@ -293,7 +310,7 @@ public class Query<T>
         ArgumentNullException.ThrowIfNull(key);
         var expression = ExpressionTranslator.Value(key, Map, Dialect);
         IReadOnlyList<(Sql.Sql, bool)> ordering = replace ? [(expression, descending)] : [.. _ordering, (expression, descending)];
-        return new(Session, Map, _filters, ordering, _skip, _take);
+        return new(Session, Map, _filters, ordering, _skip, _take, _ignoreQueryFilters);
     }
 
     private void ThrowIfShaped(string operation)
