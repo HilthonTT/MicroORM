@@ -9,9 +9,15 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - Query filters: `EntityBuilder<T>.HasQueryFilter(x => ...)` adds a condition (such as a soft delete or a tenant) to every typed query, `Find`, `ExecuteUpdate` and `ExecuteDelete` of the entity. Captured values are read per statement. `Query<T>.IgnoreQueryFilters()` skips them.
+- `InsertMany` batches rows: one multi-row `INSERT` per batch without generated keys, and otherwise one command per batch with every key read back. Batch sizes follow `SqlDialect.MaxParameters`, with at most 1000 rows per batch.
+- `SqlDialect.InsertRows` and `SqlDialect.MaxParameters` for dialects to override.
 - Typed queries translate more expressions: `DateTime` and `DateOnly` `Year`/`Month`/`Day` (and `Hour`/`Minute`/`Second` for `DateTime`), `Math.Abs`/`Floor`/`Ceiling`, string `Substring`, `Replace`, `TrimStart`, `TrimEnd` and `string.IsNullOrWhiteSpace`.
 - `SqlFunctions.Like(value, pattern)` for `LIKE` patterns with your own wildcards.
 - `SqlDialect.DatePart` and `SqlDialect.Substring` for dialects to override.
+
+### Changed
+
+- Outside a transaction, `InsertMany` opens its own only when it needs more than one statement. A single multi-row `INSERT` is atomic without one.
 
 ### Security
 

@@ -53,6 +53,12 @@ public abstract class SqlDialect
     /// <summary>Gets the provider parameter name for a stored procedure argument.</summary>
     public virtual string ProcedureParameterName(string name) => "@" + name;
 
+    /// <summary>
+    /// Gets the most parameters one command may carry; <c>InsertMany</c> sizes its batches to stay
+    /// under it. The default suits any SQLite build (999).
+    /// </summary>
+    public virtual int MaxParameters => 999;
+
     /// <summary>Gets the SQL function returning a string's length in characters.</summary>
     public virtual string LengthFunction => "LENGTH";
 
@@ -110,6 +116,31 @@ public abstract class SqlDialect
         if (identityColumn is not null)
         {
             sql.Append(" RETURNING ").AppendIdentifier(identityColumn);
+        }
+
+        return sql;
+    }
+
+    /// <summary>Builds one <c>INSERT</c> of several rows, which all list the same, non-empty set of columns.</summary>
+    public virtual SQL InsertRows(string table, IReadOnlyList<IReadOnlyList<ColumnValue>> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows, nameof(rows));
+        if (rows.Count == 0 || rows[0].Count == 0)
+        {
+            throw new ArgumentException("A multi-row insert needs at least one row and one column.", nameof(rows));
+        }
+
+        var sql = SQL.Empty.Append("INSERT INTO ").AppendIdentifier(table)
+            .Append(" (").Append(SQL.Join(", ", rows[0].Select(v => SQL.Identifier(v.Column)))).Append(") VALUES ");
+        for (var row = 0; row < rows.Count; row++)
+        {
+            sql.Append(row == 0 ? "(" : ", (");
+            for (var i = 0; i < rows[row].Count; i++)
+            {
+                sql.Append(i == 0 ? string.Empty : ", ").AppendParameter(rows[row][i].Value, rows[row][i].ClrType);
+            }
+
+            sql.Append(")");
         }
 
         return sql;

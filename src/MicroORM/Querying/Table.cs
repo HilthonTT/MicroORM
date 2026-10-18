@@ -3,6 +3,7 @@ using MicroORM.Exceptions;
 using MicroORM.Mapping;
 using MicroORM.Sessions;
 using System.Data;
+using System.Data.Common;
 using System.Linq.Expressions;
 
 namespace MicroORM.Querying;
@@ -15,6 +16,9 @@ namespace MicroORM.Querying;
 public sealed class Table<T> : Query<T>
     where T : class
 {
+    /// <summary>The most rows one multi-row <c>INSERT</c> writes; SQL Server's <c>VALUES</c> allows 1000.</summary>
+    private const int MaxRowsPerInsert = 1000;
+
     internal Table(MicroSession session, EntityMap map)
         : base(session, map)
     {
@@ -29,8 +33,10 @@ public sealed class Table<T> : Query<T>
     public void Insert(T entity) => MicroSession.Sync(InsertCore(false, entity, default));
 
     /// <summary>
-    /// Inserts entities in order. Outside a transaction, the batch runs in its own transaction so it
-    /// is all-or-nothing.
+    /// Inserts entities in order, in batches: one multi-row <c>INSERT</c> per batch or, when
+    /// database-generated keys are read back, one command per batch with a statement per entity.
+    /// Batches are as large as the dialect's parameter limit allows, up to 1000 rows. Outside a
+    /// transaction, several statements run in their own transaction, so the call is all-or-nothing.
     /// </summary>
     /// <returns>The number of inserted entities.</returns>
     public Task<int> InsertManyAsync(IEnumerable<T> entities, CancellationToken cancellationToken = default) =>
@@ -123,12 +129,24 @@ public sealed class Table<T> : Query<T>
     private async ValueTask<int> InsertManyCore(bool async, IEnumerable<T> entities, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entities);
-        if (Session is MicroDb db)
+        var all = entities.ToList();
+        if (all.Exists(e => e is null))
+        {
+            throw new ArgumentException("The entities include null.", nameof(entities));
+        }
+
+        // A generated key is read back per row, so each row is its own statement; a batch is still one command.
+        var columns = Map.Columns.Count(c => c.IsInsertable);
+        var perRow = Map.Identity is not null || columns == 0;
+        var batches = all.Chunk(Math.Clamp(Dialect.MaxParameters / Math.Max(columns, 1), 1, MaxRowsPerInsert)).ToList();
+
+        // Several statements are only all-or-nothing in a transaction.
+        if (Session is MicroDb db && (batches.Count > 1 || (perRow && all.Count > 1)))
         {
             var transaction = await db.BeginTransactionCore(async, IsolationLevel.Unspecified, cancellationToken).ConfigureAwait(false);
             try
             {
-                var inserted = await transaction.Table<T>().InsertManyCore(async, entities, cancellationToken).ConfigureAwait(false);
+                var inserted = await transaction.Table<T>().InsertBatchesCore(async, batches, perRow, cancellationToken).ConfigureAwait(false);
                 if (async)
                 {
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -146,14 +164,66 @@ public sealed class Table<T> : Query<T>
             }
         }
 
+        return await InsertBatchesCore(async, batches, perRow, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<int> InsertBatchesCore(bool async, List<T[]> batches, bool perRow, CancellationToken cancellationToken)
+    {
+        var identity = Map.Identity;
         var count = 0;
-        foreach (var entity in entities)
+        foreach (var batch in batches)
         {
-            await InsertCore(async, entity, cancellationToken).ConfigureAwait(false);
-            count++;
+            count += batch.Length;
+            if (!perRow)
+            {
+                await Session.ExecuteCore(async, Dialect.InsertRows(Map.Table, batch.Select(InsertValues).ToList()), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var sql = Sql.Sql.Join("; ", batch.Select(e => Dialect.Insert(Map.Table, InsertValues(e), identity?.Name)));
+            if (identity is null)
+            {
+                await Session.ExecuteCore(async, sql, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var generated = await Session.RunCore(async, Session.Prepare(sql), ReadKeys, cancellationToken).ConfigureAwait(false);
+            if (generated.Count != batch.Length)
+            {
+                throw new InvalidOperationException($"Inserting {batch.Length} {Map.EntityType.Name} rows returned {generated.Count} generated keys.");
+            }
+
+            for (var i = 0; i < batch.Length; i++)
+            {
+                identity.SetValue(batch[i], generated[i], Session.Engine.Handlers);
+            }
         }
 
         return count;
+    }
+
+    /// <summary>Reads the first value of every row of every result set: one generated key per statement.</summary>
+    private static async ValueTask<List<object?>> ReadKeys(DbCommand command, bool async, CancellationToken cancellationToken)
+    {
+        var reader = async ? await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false) : command.ExecuteReader();
+        try
+        {
+            var keys = new List<object?>();
+            do
+            {
+                while (reader.FieldCount > 0 && (async ? await reader.ReadAsync(cancellationToken).ConfigureAwait(false) : reader.Read()))
+                {
+                    keys.Add(reader.GetValue(0));
+                }
+            }
+            while (async ? await reader.NextResultAsync(cancellationToken).ConfigureAwait(false) : reader.NextResult());
+
+            return keys;
+        }
+        finally
+        {
+            await MicroSession.DisposeCore(reader, async).ConfigureAwait(false);
+        }
     }
 
     private async ValueTask<bool> UpdateCore(bool async, T entity, CancellationToken cancellationToken)

@@ -10,7 +10,7 @@ Every operation on this page has an `...Async` form and a synchronous form (`Ins
 | Method | What it does |
 |---|---|
 | `InsertAsync(entity)` | Inserts the entity. A database-generated key is read back and assigned. |
-| `InsertManyAsync(entities)` | Inserts in order. Outside a transaction, the batch runs in its own transaction (all-or-nothing). Returns the count. |
+| `InsertManyAsync(entities)` | Inserts in order, in batches. Outside a transaction, it is all-or-nothing. Returns the count. See [Batch inserts](#batch-inserts). |
 | `UpdateAsync(entity)` | Writes every non-key, non-generated column, matched by key. Returns `true` if a row matched. |
 | `DeleteAsync(entity)` | Deletes by key. Returns `true` if a row was deleted. |
 | `DeleteByKeyAsync(key)` | Deletes by key value; pass a tuple for a [composite key](/docs/mapping/#composite-keys). |
@@ -40,6 +40,24 @@ How each database returns a generated key:
 
 `UpdateAsync` writes **all** updatable columns. MicroORM doesn't track changes. To update a few
 columns without loading the entity, use `ExecuteUpdateAsync` (see [Querying](/docs/querying/#set-based-operations)).
+
+## Batch inserts
+
+`InsertManyAsync` writes many rows in few commands:
+
+- **Without a database-generated key**, each batch is one multi-row statement:
+  `INSERT INTO t (a, b) VALUES (@p0, @p1), (@p2, @p3), ...`.
+- **With a generated key**, each entity gets its own `INSERT` so its key can be read back, but a
+  whole batch is sent as one command, in one round trip. Every entity's key is assigned.
+
+A batch holds as many rows as the dialect's parameter limit allows, up to 1000 rows: about 2000
+parameters on SQL Server, 32000 on PostgreSQL and MySQL, and 999 on SQLite
+(`SqlDialect.MaxParameters`). When the call needs more than one statement and no transaction is
+open, it runs in its own transaction, so either every row is inserted or none is.
+
+```csharp
+var count = await db.Table<Reading>().InsertManyAsync(readings);  // 10,000 rows: 10 statements on PostgreSQL
+```
 
 ## Upsert
 

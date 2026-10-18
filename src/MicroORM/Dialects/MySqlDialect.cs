@@ -8,6 +8,8 @@ internal sealed class MySqlDialect : SqlDialect
 
     public override string FloatType => "DOUBLE";
 
+    public override int MaxParameters => 32000;
+
     protected override string QuotePart(string part) => "`" + part.Replace("`", "``", StringComparison.Ordinal) + "`";
 
     public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>

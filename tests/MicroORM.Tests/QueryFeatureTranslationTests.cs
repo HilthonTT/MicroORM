@@ -41,6 +41,19 @@ public class QueryFeatureTranslationTests
         Assert.Equal(21, query.ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
     }
 
+    // ---- Multi-row writes ----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("SQLite", "INSERT INTO \"t\" (\"a\", \"b\") VALUES (@p0, @p1), (@p2, @p3)")]
+    [InlineData("SQL Server", "INSERT INTO [t] ([a], [b]) VALUES (@p0, @p1), (@p2, @p3)")]
+    [InlineData("MySQL", "INSERT INTO `t` (`a`, `b`) VALUES (@p0, @p1), (@p2, @p3)")]
+    public void Insert_rows_per_dialect(string dialect, string expected)
+    {
+        var d = TestDialects.ByName(dialect);
+        static IReadOnlyList<ColumnValue> Row(int a, string b) => [new("a", a, typeof(int)), new("b", b, typeof(string))];
+        Assert.Equal(expected, d.InsertRows("t", [Row(1, "x"), Row(2, "y")]).Render(d).Text);
+    }
+
     private static DbConnection NoConnection() => throw new InvalidOperationException("No database in translation tests.");
 
     private sealed class TenantScope

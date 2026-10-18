@@ -10,6 +10,9 @@ internal sealed class SqlServerDialect : SqlDialect
 
     public override string LengthFunction => "LEN";
 
+    // SQL Server allows 2100 parameters per command.
+    public override int MaxParameters => 2000;
+
     public override string FloatType => "FLOAT";
 
     protected override string QuotePart(string part) => "[" + part.Replace("]", "]]", StringComparison.Ordinal) + "]";
