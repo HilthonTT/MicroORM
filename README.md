@@ -32,7 +32,7 @@ await db.Table<Customer>().UpsertAsync(customer, on: c => c.Email); // atomic in
 
 - **Injection-safe by type:** query methods take `Sql`, an interpolated string handler, so values are always parameters.
 - **Typed queries:** filters, ordering, paging, projections, aggregates and set-based updates. Unsupported queries throw instead of running in memory.
-- **CRUD without SQL:** generated keys, composite keys, batched inserts, upserts and optimistic concurrency.
+- **CRUD without SQL:** generated keys, composite keys, batched inserts, partial updates, upserts and optimistic concurrency.
 - **Query filters:** soft delete and multi-tenancy, applied to every typed query of an entity.
 - **Joins and result sets:** split rows into objects, or read several result sets from one command.
 - **Type handlers:** value objects, strongly typed IDs, JSON columns and enums as text.

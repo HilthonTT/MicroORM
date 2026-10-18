@@ -86,6 +86,14 @@ internal sealed class SqlServerDialect : SqlDialect
         return sql;
     }
 
+    // OUTPUT comes before WHERE. It fails on tables with triggers, which need OUTPUT ... INTO.
+    public override Sql.Sql UpdateReturning(string table, Sql.Sql assignments, Sql.Sql? condition, IReadOnlyList<string> returning)
+    {
+        var sql = Sql.Sql.Empty.Append("UPDATE ").AppendIdentifier(table).Append(" SET ").Append(assignments)
+            .Append(" OUTPUT ").Append(Sql.Sql.Join(", ", returning.Select(c => Sql.Sql.Raw("INSERTED.").AppendIdentifier(c))));
+        return condition is null ? sql : sql.Append(" WHERE ").Append(condition);
+    }
+
     public override Sql.Sql Upsert(
         string table,
         IReadOnlyList<ColumnValue> values,

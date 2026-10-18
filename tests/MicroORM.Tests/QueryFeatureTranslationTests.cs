@@ -8,6 +8,8 @@ using System.Data.Common;
 
 namespace MicroORM.Tests;
 
+using Sql = MicroORM.Sql.Sql;
+
 /// <summary>Checks the SQL of query filters, grouping, Distinct, subqueries and multi-row writes without a database.</summary>
 public class QueryFeatureTranslationTests
 {
@@ -52,6 +54,22 @@ public class QueryFeatureTranslationTests
         var d = TestDialects.ByName(dialect);
         static IReadOnlyList<ColumnValue> Row(int a, string b) => [new("a", a, typeof(int)), new("b", b, typeof(string))];
         Assert.Equal(expected, d.InsertRows("t", [Row(1, "x"), Row(2, "y")]).Render(d).Text);
+    }
+
+    [Theory]
+    [InlineData("SQLite", "UPDATE \"t\" SET \"a\" = 1 WHERE b > 2 RETURNING \"id\", \"a\"")]
+    [InlineData("PostgreSQL", "UPDATE \"t\" SET \"a\" = 1 WHERE b > 2 RETURNING \"id\", \"a\"")]
+    [InlineData("SQL Server", "UPDATE [t] SET [a] = 1 OUTPUT INSERTED.[id], INSERTED.[a] WHERE b > 2")]
+    public void Update_returning_per_dialect(string dialect, string expected)
+    {
+        var d = TestDialects.ByName(dialect);
+        Assert.Equal(expected, d.UpdateReturning("t", Sql.Identifier("a") + Sql.Raw(" = 1"), Sql.Raw("b > 2"), ["id", "a"]).Render(d).Text);
+    }
+
+    [Fact]
+    public void MySql_cannot_return_updated_rows()
+    {
+        Assert.Throws<NotSupportedException>(() => SqlDialect.MySql.UpdateReturning("t", Sql.Raw("a = 1"), null, ["id"]));
     }
 
     private static DbConnection NoConnection() => throw new InvalidOperationException("No database in translation tests.");

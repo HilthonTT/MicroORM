@@ -147,6 +147,28 @@ public abstract class SqlDialect
     }
 
     /// <summary>
+    /// Builds an <c>UPDATE</c> that also returns the <paramref name="returning"/> columns of every
+    /// updated row, as a result set.
+    /// </summary>
+    /// <param name="table">The table.</param>
+    /// <param name="assignments">The <c>SET</c> assignments.</param>
+    /// <param name="condition">The <c>WHERE</c> condition, or <see langword="null"/> to update every row.</param>
+    /// <param name="returning">The columns to return.</param>
+    public virtual SQL UpdateReturning(string table, SQL assignments, SQL? condition, IReadOnlyList<string> returning)
+    {
+        ArgumentNullException.ThrowIfNull(assignments, nameof(assignments));
+        ArgumentNullException.ThrowIfNull(returning, nameof(returning));
+
+        var sql = SQL.Empty.Append("UPDATE ").AppendIdentifier(table).Append(" SET ").Append(assignments);
+        if (condition is not null)
+        {
+            sql.Append(" WHERE ").Append(condition);
+        }
+
+        return sql.Append(" RETURNING ").Append(SQL.Join(", ", returning.Select(SQL.Identifier)));
+    }
+
+    /// <summary>
     /// Builds an insert-or-update statement: insert <paramref name="values"/>, or, when a row with
     /// the same <paramref name="conflictColumns"/> exists, update <paramref name="updateColumns"/>.
     /// When <paramref name="identityColumn"/> is set, the statement must produce the row's key as a

@@ -128,6 +128,19 @@ var removed = await db.Table<Session>().Where(s => s.ExpiresAt < DateTime.UtcNow
 - They reject `OrderBy`, `Skip` and `Take`, because those have no portable meaning in `UPDATE` and `DELETE`.
 - **Without `Where`, they affect the whole table.**
 
+`ExecuteUpdateReturningAsync` does the same update and returns the rows as updated, in the same
+statement: `RETURNING` in SQLite and PostgreSQL, `OUTPUT INSERTED.*` in SQL Server.
+
+```csharp
+// UPDATE "accounts" SET "balance" = ("balance" - @p0) WHERE ("id" = @p1) RETURNING "id", "owner", "balance"
+var debited = await db.Table<Account>()
+    .Where(a => a.Id == id)
+    .ExecuteUpdateReturningAsync(s => s.SetFrom(a => a.Balance, a => a.Balance - amount));
+```
+
+MySQL and MariaDB can't return updated rows, so there it throws `NotSupportedException`. On SQL
+Server, `OUTPUT` fails on a table with triggers.
+
 ## Projections
 
 `Select` chooses what each row returns. Filter, sort and page first, then project:

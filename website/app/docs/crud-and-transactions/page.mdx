@@ -12,6 +12,7 @@ Every operation on this page has an `...Async` form and a synchronous form (`Ins
 | `InsertAsync(entity)` | Inserts the entity. A database-generated key is read back and assigned. |
 | `InsertManyAsync(entities)` | Inserts in order, in batches. Outside a transaction, it is all-or-nothing. Returns the count. See [Batch inserts](#batch-inserts). |
 | `UpdateAsync(entity)` | Writes every non-key, non-generated column, matched by key. Returns `true` if a row matched. |
+| `UpdateAsync(entity, e => new { e.A, e.B })` | Writes only the chosen columns, matched by key. |
 | `DeleteAsync(entity)` | Deletes by key. Returns `true` if a row was deleted. |
 | `DeleteByKeyAsync(key)` | Deletes by key value; pass a tuple for a [composite key](/docs/mapping/#composite-keys). |
 | `FindAsync(key)` | Returns the entity with that key, or `null`; pass a tuple for a composite key. |
@@ -38,8 +39,18 @@ How each database returns a generated key:
 | SQL Server | `INSERT ...; SELECT CAST(SCOPE_IDENTITY() AS bigint)` (works with triggers) |
 | MySQL | `INSERT ...; SELECT LAST_INSERT_ID()` |
 
-`UpdateAsync` writes **all** updatable columns. MicroORM doesn't track changes. To update a few
-columns without loading the entity, use `ExecuteUpdateAsync` (see [Querying](/docs/querying/#set-based-operations)).
+`UpdateAsync(entity)` writes **all** updatable columns, because MicroORM doesn't track changes.
+To write only some, name them:
+
+```csharp
+ada.Email = "ada@example.com";
+await people.UpdateAsync(ada, p => p.Email);                  // UPDATE "Person" SET "Email" = @p0 WHERE "Id" = @p1
+await people.UpdateAsync(ada, p => new { p.Name, p.Email });  // several columns
+```
+
+The columns can't include the key, the version or a database-generated column. A versioned
+entity's version is still checked and incremented. To update rows without loading them, use
+`ExecuteUpdateAsync` (see [Querying](/docs/querying/#set-based-operations)).
 
 ## Batch inserts
 

@@ -228,6 +228,19 @@ public class Query<T>
     /// <summary>Updates every matching row in one statement.</summary>
     public int ExecuteUpdate(Action<UpdateBuilder<T>> set) => MicroSession.Sync(Session.ExecuteCore(false, UpdateSql(set), default));
 
+    /// <summary>
+    /// Updates every matching row in one statement and returns the rows as updated, using
+    /// <c>RETURNING</c> (SQLite, PostgreSQL) or <c>OUTPUT</c> (SQL Server). MySQL can't return
+    /// updated rows and throws <see cref="NotSupportedException"/>.
+    /// </summary>
+    /// <remarks>On SQL Server, <c>OUTPUT</c> fails on a table with triggers.</remarks>
+    public Task<List<T>> ExecuteUpdateReturningAsync(Action<UpdateBuilder<T>> set, CancellationToken cancellationToken = default) =>
+        Session.QueryCore<T>(true, UpdateReturningSql(set), null, cancellationToken).AsTask();
+
+    /// <summary>Updates every matching row in one statement and returns the rows as updated.</summary>
+    public List<T> ExecuteUpdateReturning(Action<UpdateBuilder<T>> set) =>
+        MicroSession.Sync(Session.QueryCore<T>(false, UpdateReturningSql(set), null, default));
+
     // ---- SQL -----------------------------------------------------------------------------------
 
     /// <summary>Builds the <c>SELECT</c> statement without running it.</summary>
@@ -289,20 +302,29 @@ public class Query<T>
         return Sql.Sql.Empty.Append("DELETE FROM ").AppendIdentifier(Map.Table).Append(WhereClause());
     }
 
-    private Sql.Sql UpdateSql(Action<UpdateBuilder<T>> set)
+    private Sql.Sql UpdateSql(Action<UpdateBuilder<T>> set) =>
+        Sql.Sql.Empty.Append("UPDATE ").AppendIdentifier(Map.Table).Append(" SET ").Append(Assignments(set, "ExecuteUpdate")).Append(WhereClause());
+
+    private Sql.Sql UpdateReturningSql(Action<UpdateBuilder<T>> set)
+    {
+        var assignments = Assignments(set, "ExecuteUpdateReturning");
+        var filters = Filters;
+        return Dialect.UpdateReturning(
+            Map.Table,
+            assignments,
+            filters.Count > 0 ? Sql.Sql.Join(" AND ", filters) : null,
+            Map.Columns.Select(c => c.Name).ToList());
+    }
+
+    private Sql.Sql Assignments(Action<UpdateBuilder<T>> set, string operation)
     {
         ArgumentNullException.ThrowIfNull(set);
-        ThrowIfShaped("ExecuteUpdate");
+        ThrowIfShaped(operation);
         var builder = new UpdateBuilder<T>(Map, Dialect);
         set(builder);
-        if (builder.Assignments.Count == 0)
-        {
-            throw new InvalidOperationException("ExecuteUpdate needs at least one Set(...) call.");
-        }
-
-        return Sql.Sql.Empty.Append("UPDATE ").AppendIdentifier(Map.Table).Append(" SET ")
-            .Append(Sql.Sql.Join(", ", builder.Assignments))
-            .Append(WhereClause());
+        return builder.Assignments.Count > 0
+            ? Sql.Sql.Join(", ", builder.Assignments)
+            : throw new InvalidOperationException($"{operation} needs at least one Set(...) call.");
     }
 
     private Query<T> Order<TKey>(Expression<Func<T, TKey>> key, bool descending, bool replace)
