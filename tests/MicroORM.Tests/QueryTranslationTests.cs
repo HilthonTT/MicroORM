@@ -187,6 +187,10 @@ public class QueryTranslationTests
         var mySql = new MicroDb(SqlDialect.MySql, NoConnection).Table<Person>();
         var flag = true;
         Assert.Contains("(CASE WHEN ([Age] > @p0) THEN 1 ELSE 0 END = @p1)", sqlServer.Where(p => (p.Age > 18) == flag).ToString(), StringComparison.Ordinal);
+
+        // The flag is compared as the CASE's integer: PostgreSQL has no integer = boolean operator.
+        var compared = sqlServer.Where(p => (p.Age > 18) == flag).ToSql().Render(SqlDialect.PostgreSql).Parameters[1];
+        Assert.Equal((1, typeof(int)), (compared.Value, compared.ClrType));
         Assert.Contains("((LEN([Name] + N'x') - 1) = @p0)", sqlServer.Where(p => p.Name.Length == 4).ToString(), StringComparison.Ordinal);
         Assert.Contains("(([Age] - @p0 * ROUND([Age] / @p1, 0, 1)) = @p2)", sqlServer.Where(p => p.Age % 2.5 == 1).ToString(), StringComparison.Ordinal);
         Assert.Contains("(TRIM(@p0 FROM [Name]) = @p1)", sqlServer.Where(p => p.Name.Trim() == "x").ToString(), StringComparison.Ordinal);

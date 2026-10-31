@@ -148,16 +148,19 @@ internal sealed class ExpressionTranslator
         };
     }
 
-    private Sql.Sql Projected(Expression node)
+    private Sql.Sql Projected(Expression node) => IsProjectedCondition(node)
+        ? Sql.Sql.Empty.Append("CASE WHEN ").Append(Condition(node)).Append(" THEN 1 ELSE 0 END")
+        : Visit(node);
+
+    /// <summary>Whether <paramref name="node"/> is a condition that becomes <c>CASE WHEN ... THEN 1 ELSE 0 END</c> as a value.</summary>
+    private bool IsProjectedCondition(Expression node)
     {
         var stripped = StripConvert(node);
 
         // A bool column, or a bool grouping key, is a value already.
-        var isCondition = node.Type == typeof(bool) && stripped is not MemberExpression { Expression: ParameterExpression } &&
-            !(_group is not null && stripped is MemberExpression { Expression: MemberExpression { Member.Name: "Key", Expression: var key } } && key == _entity);
-        return isCondition && DependsOnEntity(node)
-            ? Sql.Sql.Empty.Append("CASE WHEN ").Append(Condition(node)).Append(" THEN 1 ELSE 0 END")
-            : Visit(node);
+        return node.Type == typeof(bool) && stripped is not MemberExpression { Expression: ParameterExpression } &&
+            !(_group is not null && stripped is MemberExpression { Expression: MemberExpression { Member.Name: "Key", Expression: var key } } && key == _entity) &&
+            DependsOnEntity(node);
     }
 
     private Sql.Sql Visit(Expression node)
@@ -298,9 +301,22 @@ internal sealed class ExpressionTranslator
     private Sql.Sql Side(Expression node, Expression other)
     {
         // A condition compared with a bool (x.Age > 18 == flag) must be a value; SQL Server can't compare predicates.
-        if (node.Type == typeof(bool) && DependsOnEntity(node))
+        if (IsProjectedCondition(node))
         {
             return Projected(node);
+        }
+
+        // The condition's side is then an integer, so this side must be one too: PostgreSQL can't compare integer and boolean.
+        if (IsBoolean(node.Type) && IsProjectedCondition(other))
+        {
+            if (!DependsOnEntity(node))
+            {
+                return Evaluate(node) is bool flag ? Parameter(flag ? 1 : 0, typeof(int)) : Parameter(null, typeof(int));
+            }
+
+            // A NULL stays NULL, so it equals neither 1 nor 0.
+            var condition = Condition(node);
+            return Sql.Sql.Empty.Append("CASE WHEN ").Append(condition).Append(" THEN 1 WHEN NOT ").Append(condition).Append(" THEN 0 END");
         }
 
         if (!DependsOnEntity(node) && EnumTypeOf(other) is { } enumType)

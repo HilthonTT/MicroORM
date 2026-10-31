@@ -75,7 +75,8 @@ public class QueryTests
         Assert.Equal(["50% Eve_", "Brendan", "Dmitri"], await Names(people.Where(p => string.IsNullOrWhiteSpace(p.Email + "\t"))));
         Assert.Equal(5, await people.Where(p => (p.Name + "\t\n").Trim() == p.Name).CountAsync());
         Assert.Equal(["Ada"], await Names(people.Where(p => (p.Name + " ").Length == 4)));
-        Assert.Empty(await Names(people.Where(p => p.Name.StartsWith("ada"))));
+        // StartsWith is as case-sensitive as =, which follows the collation: MySQL's and SQL Server's defaults ignore case.
+        Assert.Equal(await Names(people.Where(p => p.Name == "ada")), await Names(people.Where(p => p.Name.StartsWith("ada"))));
 
         Assert.Equal(3.6, Assert.Single(await people.Where(p => p.Name == "Ada").Select(p => (double)p.Age / (p.Age - 26)).ToListAsync()), 6);
         Assert.Equal(["Ada"], await Names(people.Where(p => p.Age / 10 == 3)));
