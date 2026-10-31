@@ -27,6 +27,28 @@ public class MappingTests
     public void Snake_case(string input, string expected) => Assert.Equal(expected, NamingConvention.SnakeCase.Convert(input));
 
     [Fact]
+    public void Configuring_options_after_creating_the_database_changes_nothing()
+    {
+        var options = TestDatabase.CreateOptions();
+        var db = new MicroDb(SqlDialect.Sqlite, () => throw new InvalidOperationException(), options);
+        options.Entity<Document>(e => e.ToTable("elsewhere"));
+
+        Assert.Equal("micro_documents", db.MapOf<Document>().Table);
+    }
+
+    [Fact]
+    public void Dates_with_an_offset_read_as_utc_whatever_the_provider()
+    {
+        var fromText = ValueConverter.To<DateTime>("2024-01-01 10:00:00+02:00");
+        var fromOffset = ValueConverter.To<DateTime>(new DateTimeOffset(2024, 1, 1, 10, 0, 0, TimeSpan.FromHours(2)));
+
+        Assert.Equal(new DateTime(2024, 1, 1, 8, 0, 0, DateTimeKind.Utc), fromText);
+        Assert.Equal(DateTimeKind.Utc, fromText.Kind);
+        Assert.Equal(fromOffset, fromText);
+        Assert.Equal(DateTimeKind.Unspecified, ValueConverter.To<DateTime>("2024-01-01 10:00:00").Kind);
+    }
+
+    [Fact]
     public void Conventions_find_key_and_skip_non_scalars()
     {
         var map = Map<Person>();

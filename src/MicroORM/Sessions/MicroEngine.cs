@@ -17,7 +17,8 @@ internal sealed class MicroEngine
         Dialect = dialect;
         Options = options;
         Handlers = new TypeHandlerRegistry(new Dictionary<Type, ITypeHandler>(options.TypeHandlers));
-        Mappings = new MappingRegistry(options.Naming, options.Entities, Handlers);
+        // Copied, as the handlers are, so configuring the options afterwards doesn't change this database's mappings.
+        Mappings = new MappingRegistry(options.Naming, options.Entities.ToDictionary(e => e.Key, e => e.Value.Snapshot()), Handlers);
         Materializer = new Materializer(Mappings, Handlers);
     }
 

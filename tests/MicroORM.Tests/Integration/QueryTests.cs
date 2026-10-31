@@ -59,6 +59,37 @@ public class QueryTests
 
     [Theory]
     [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Nulls_casts_and_strings_behave_like_linq(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        var people = database.Db.Table<Person>();
+
+        static async Task<string[]> Names(Query<Person> query) => [.. (await query.OrderBy(p => p.Name).ToListAsync()).Select(p => p.Name)];
+
+        // Brendan, Dmitri and Eve have no email.
+        string[] notAda = ["50% Eve_", "Brendan", "Cleo", "Dmitri"];
+        Assert.Equal(notAda, await Names(people.Where(p => p.Email != "ada@example.com")));
+        Assert.Equal(notAda, await Names(people.Where(p => !(p.Email == "ada@example.com"))));
+        Assert.Equal(notAda, await Names(people.Where(p => !p.Email!.StartsWith("ada"))));
+        Assert.Equal(["Brendan"], await Names(people.Where(p => p.Name + p.Email == "Brendan")));
+        Assert.Equal(["50% Eve_", "Brendan", "Dmitri"], await Names(people.Where(p => string.IsNullOrWhiteSpace(p.Email + "\t"))));
+        Assert.Equal(5, await people.Where(p => (p.Name + "\t\n").Trim() == p.Name).CountAsync());
+        Assert.Equal(["Ada"], await Names(people.Where(p => (p.Name + " ").Length == 4)));
+        Assert.Empty(await Names(people.Where(p => p.Name.StartsWith("ada"))));
+
+        Assert.Equal(3.6, Assert.Single(await people.Where(p => p.Name == "Ada").Select(p => (double)p.Age / (p.Age - 26)).ToListAsync()), 6);
+        Assert.Equal(["Ada"], await Names(people.Where(p => p.Age / 10 == 3)));
+        Assert.Equal(["Ada", "Cleo"], await Names(people.Where(p => (p.Age + 0.5) % 2 == 0.5)));
+        var older = true;
+        Assert.Equal(["50% Eve_", "Ada", "Cleo"], await Names(people.Where(p => (p.Age > 30) == older)));
+
+        // An empty list: IN matches nothing, NOT IN everything.
+        Assert.Equal(5, await database.Db.ScalarAsync<int>($"SELECT COUNT(*) FROM micro_people WHERE id NOT IN {Array.Empty<int>()}"));
+        Assert.Equal(0, await database.Db.ScalarAsync<int>($"SELECT COUNT(*) FROM micro_people WHERE id IN {Array.Empty<int>()}"));
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
     public async Task Filters_and_limits_behave_like_linq(string provider)
     {
         await using var database = await PeopleAsync(provider);

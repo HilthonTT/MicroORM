@@ -79,6 +79,16 @@ public sealed class ProcedureParameters
         }
     }
 
+    /// <summary>Forgets the previous call's results, so a failed call doesn't leave them readable.</summary>
+    internal void ResetOutputs()
+    {
+        foreach (var parameter in _parameters)
+        {
+            parameter.Result = null;
+            parameter.HasResult = false;
+        }
+    }
+
     internal void CollectOutputs(DbCommand command, TypeHandlerRegistry handlers)
     {
         for (var i = 0; i < _parameters.Count; i++)

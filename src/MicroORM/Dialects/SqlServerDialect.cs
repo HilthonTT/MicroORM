@@ -15,6 +15,22 @@ internal sealed class SqlServerDialect : SqlDialect
 
     public override string FloatType => "FLOAT";
 
+    public override string DecimalType => "DECIMAL(38, 18)";
+
+    // LEN ignores trailing spaces; the appended character keeps them.
+    public override Sql.Sql Length(Sql.Sql value) =>
+        Sql.Sql.Empty.Append("(LEN(").Append(value).Append(" + N'x') - 1)");
+
+    // % doesn't accept floats; ROUND(x, 0, 1) truncates.
+    public override Sql.Sql Modulo(Sql.Sql left, Sql.Sql right, bool integral) => integral
+        ? base.Modulo(left, right, integral)
+        : Sql.Sql.Empty.Append("(").Append(left).Append(" - ").Append(right).Append(" * ROUND(").Append(left).Append(" / ").Append(right).Append(", 0, 1))");
+
+    // TRIM(chars FROM x) needs SQL Server 2017, LTRIM and RTRIM with characters 2022.
+    public override Sql.Sql Trim(Sql.Sql value, bool leading, bool trailing) => leading && trailing
+        ? Sql.Sql.Empty.Append("TRIM(").AppendParameter(Whitespace, typeof(string)).Append(" FROM ").Append(value).Append(")")
+        : base.Trim(value, leading, trailing);
+
     protected override string QuotePart(string part) => "[" + part.Replace("]", "]]", StringComparison.Ordinal) + "]";
 
     // Not "+": with a number on one side SQL Server adds, converting the text to a number.

@@ -221,22 +221,26 @@ public sealed class Sql
                     AppendParameter(dialect, text, parameters, parameter.Value, parameter.ClrType);
                     break;
                 case ListPart list:
-                    text.Append('(');
-
                     bool any = false;
                     foreach (object item in list.Values)
                     {
-                        if (any)
-                        {
-                            text.Append(", ");
-                        }
-
+                        text.Append(any ? ", " : "(");
                         AppendParameter(dialect, text, parameters, item, item?.GetType());
                         any = true;
                     }
 
-                    // "x IN (NULL)" matches nothing, which is the meaning of an empty IN list.
-                    text.Append(any ? ")" : "NULL)");
+                    if (any)
+                    {
+                        text.Append(')');
+                    }
+                    else
+                    {
+                        // Not "(NULL)": "x NOT IN (NULL)" is unknown, so it would match nothing too.
+                        var placeholder = new StringBuilder();
+                        AppendParameter(dialect, placeholder, parameters, null, ElementType(list.Values));
+                        text.Append(dialect.EmptyList(placeholder.ToString()));
+                    }
+
                     break;
                 default:
                     break;
@@ -255,6 +259,12 @@ public sealed class Sql
         text.Append(name);
         parameters.Add(new SqlParameterValue(name, value, clrType));
     }
+
+    /// <summary>The item type of a collection, such as <see cref="int"/> for <c>List&lt;int&gt;</c>.</summary>
+    private static Type? ElementType(IEnumerable values) =>
+        values.GetType().GetInterfaces().Append(values.GetType())
+            .FirstOrDefault(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            ?.GetGenericArguments()[0];
 
     /// <summary>Renders the fragment for debugging, using SQLite syntax.</summary>
     public override string ToString() => Render(SqlDialect.Sqlite).Text;

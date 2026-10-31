@@ -65,8 +65,56 @@ public abstract class SqlDialect
     /// <summary>Gets the floating-point type used to average integers without truncation.</summary>
     public virtual string FloatType => "DOUBLE PRECISION";
 
+    /// <summary>Gets the exact numeric type used to divide integers as decimals.</summary>
+    public virtual string DecimalType => "NUMERIC";
+
+    /// <summary>The characters C#'s <c>Trim()</c> removes that databases commonly store: space, tab, newlines, vertical tab and form feed.</summary>
+    protected const string Whitespace = " \t\n\r\v\f";
+
     /// <summary>Concatenates two string expressions.</summary>
     public virtual SQL Concat(SQL left, SQL right) => SQL.Empty.Append("(").Append(left).Append(" || ").Append(right).Append(")");
+
+    /// <summary>Gets a string's length in characters, trailing spaces included.</summary>
+    public virtual SQL Length(SQL value) => SQL.Empty.Append(LengthFunction + "(").Append(value).Append(")");
+
+    /// <summary>Divides; <paramref name="integral"/> means both sides are integers and the result truncates toward zero, as in C#.</summary>
+    public virtual SQL Divide(SQL left, SQL right, bool integral) => SQL.Empty.Append("(").Append(left).Append(" / ").Append(right).Append(")");
+
+    /// <summary>The remainder of a division, with the sign of <paramref name="left"/> as in C#.</summary>
+    /// <param name="left">The dividend.</param>
+    /// <param name="right">The divisor.</param>
+    /// <param name="integral">Whether both sides are integers.</param>
+    public virtual SQL Modulo(SQL left, SQL right, bool integral) => integral
+        ? SQL.Empty.Append("(").Append(left).Append(" % ").Append(right).Append(")")
+        : SQL.Empty.Append("(").Append(left).Append(" - ").Append(right).Append(" * TRUNC(").Append(left).Append(" / ").Append(right).Append("))");
+
+    /// <summary>Removes <see cref="Whitespace"/> from the start, the end or both ends of a string.</summary>
+    public virtual SQL Trim(SQL value, bool leading, bool trailing) =>
+        SQL.Empty.Append((leading && trailing ? "TRIM" : leading ? "LTRIM" : "RTRIM") + "(").Append(value).Append(", ").AppendParameter(Whitespace, typeof(string)).Append(")");
+
+    /// <summary>
+    /// Matches a string against <paramref name="text"/> case-sensitively where <c>=</c> is: with
+    /// <paramref name="prefix"/>, anything may come before it; with <paramref name="suffix"/>, anything after.
+    /// </summary>
+    public virtual SQL StringMatch(SQL value, string text, bool prefix, bool suffix)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        // '!' is the escape character because '\' means different things across dialects.
+        var escaped = text.Replace("!", "!!", StringComparison.Ordinal)
+            .Replace("%", "!%", StringComparison.Ordinal)
+            .Replace("_", "!_", StringComparison.Ordinal)
+            .Replace("[", "![", StringComparison.Ordinal);
+        var pattern = (prefix ? "%" : string.Empty) + escaped + (suffix ? "%" : string.Empty);
+        return SQL.Empty.Append("(").Append(value).Append(" LIKE ").AppendParameter(pattern, typeof(string)).Append(" ESCAPE '!')");
+    }
+
+    /// <summary>
+    /// A subquery returning no rows, for an empty <c>IN</c> list: <c>IN</c> it is false and
+    /// <c>NOT IN</c> true, where <c>IN (NULL)</c> would make both unknown.
+    /// </summary>
+    /// <param name="parameter">A <c>NULL</c> parameter typed as the list's items, so the column has a type.</param>
+    public virtual string EmptyList(string parameter) => "(SELECT " + parameter + " WHERE 1 = 0)";
 
     /// <summary>Extracts a part of a date or time expression as an integer.</summary>
     public virtual SQL DatePart(DatePart part, SQL value) =>

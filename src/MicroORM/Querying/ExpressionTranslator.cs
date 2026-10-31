@@ -171,7 +171,7 @@ internal sealed class ExpressionTranslator
         {
             BinaryExpression binary => VisitBinary(binary),
             // On integers, ExpressionType.Not is the bitwise complement (~x), not a logical NOT.
-            UnaryExpression { NodeType: ExpressionType.Not } not when IsBoolean(not.Type) => Sql.Sql.Empty.Append("NOT (").Append(Condition(not.Operand)).Append(")"),
+            UnaryExpression { NodeType: ExpressionType.Not } not when IsBoolean(not.Type) => Negate(not),
             UnaryExpression { NodeType: ExpressionType.Negate } negate => Sql.Sql.Empty.Append("-(").Append(Visit(negate.Operand)).Append(")"),
             UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert => Visit(convert.Operand),
             MemberExpression member => VisitMember(member),
@@ -201,7 +201,7 @@ internal sealed class ExpressionTranslator
                     return Sql.Sql.Empty.Append("(").Append(Visit(node.Right)).Append(isEqual ? " IS NULL)" : " IS NOT NULL)");
                 }
 
-                return Infix(node, isEqual ? " = " : " <> ");
+                return Compare(node, isEqual);
             case ExpressionType.LessThan:
                 return Infix(node, " < ");
             case ExpressionType.LessThanOrEqual:
@@ -211,7 +211,7 @@ internal sealed class ExpressionTranslator
             case ExpressionType.GreaterThanOrEqual:
                 return Infix(node, " >= ");
             case ExpressionType.Add when node.Type == typeof(string):
-                return _dialect.Concat(Visit(node.Left), Visit(node.Right));
+                return _dialect.Concat(NullAsEmpty(node.Left), NullAsEmpty(node.Right));
             case ExpressionType.Add or ExpressionType.AddChecked:
                 return Infix(node, " + ");
             case ExpressionType.Subtract or ExpressionType.SubtractChecked:
@@ -219,9 +219,9 @@ internal sealed class ExpressionTranslator
             case ExpressionType.Multiply or ExpressionType.MultiplyChecked:
                 return Infix(node, " * ");
             case ExpressionType.Divide:
-                return Infix(node, " / ");
+                return Divide(node);
             case ExpressionType.Modulo:
-                return Infix(node, " % ");
+                return _dialect.Modulo(Side(node.Left, node.Right), Side(node.Right, node.Left), IsIntegral(node.Type));
             case ExpressionType.Coalesce:
                 return Sql.Sql.Empty.Append("COALESCE(").Append(Visit(node.Left)).Append(", ").Append(Visit(node.Right)).Append(")");
             default:
@@ -232,8 +232,77 @@ internal sealed class ExpressionTranslator
     private Sql.Sql Infix(BinaryExpression node, string op) =>
         Sql.Sql.Empty.Append("(").Append(Side(node.Left, node.Right)).Append(op).Append(Side(node.Right, node.Left)).Append(")");
 
+    /// <summary>
+    /// Translates <c>==</c> or <c>!=</c> with C#'s null semantics: null equals null and differs from
+    /// any value, where in SQL a comparison with <c>NULL</c> is unknown.
+    /// </summary>
+    private Sql.Sql Compare(BinaryExpression node, bool isEqual)
+    {
+        var left = Side(node.Left, node.Right);
+        var right = Side(node.Right, node.Left);
+        var leftNull = CanBeNull(node.Left);
+        var rightNull = CanBeNull(node.Right);
+        var sql = Sql.Sql.Empty.Append("(").Append(left).Append(isEqual ? " = " : " <> ").Append(right);
+        if (isEqual)
+        {
+            if (leftNull && rightNull)
+            {
+                sql.Append(" OR (").Append(left).Append(" IS NULL AND ").Append(right).Append(" IS NULL)");
+            }
+        }
+        else if (leftNull && rightNull)
+        {
+            sql.Append(" OR (").Append(left).Append(" IS NULL AND ").Append(right).Append(" IS NOT NULL) OR (")
+                .Append(left).Append(" IS NOT NULL AND ").Append(right).Append(" IS NULL)");
+        }
+        else if (leftNull || rightNull)
+        {
+            sql.Append(" OR ").Append(leftNull ? left : right).Append(" IS NULL");
+        }
+
+        return sql.Append(")");
+    }
+
+    /// <summary>
+    /// Translates <c>!condition</c>. SQL's <c>NOT</c> keeps an unknown condition unknown, so a row with
+    /// a <c>NULL</c> would match neither the condition nor its negation; in C# it matches the negation.
+    /// </summary>
+    private Sql.Sql Negate(UnaryExpression node) => node.Type == typeof(bool) && MayBeUnknown(node.Operand)
+        ? Sql.Sql.Empty.Append("(CASE WHEN ").Append(Condition(node.Operand)).Append(" THEN 0 ELSE 1 END = 1)")
+        : Sql.Sql.Empty.Append("NOT (").Append(Condition(node.Operand)).Append(")");
+
+    /// <summary>Translates a division; casts are otherwise dropped, and SQL divides two integers as integers.</summary>
+    private Sql.Sql Divide(BinaryExpression node)
+    {
+        var left = Side(node.Left, node.Right);
+        var right = Side(node.Right, node.Left);
+        if (IsIntegral(node.Type))
+        {
+            return _dialect.Divide(left, right, integral: true);
+        }
+
+        if (IsIntegral(SqlType(node.Left)) && IsIntegral(SqlType(node.Right)))
+        {
+            var type = (Nullable.GetUnderlyingType(node.Type) ?? node.Type) == typeof(decimal) ? _dialect.DecimalType : _dialect.FloatType;
+            left = Sql.Sql.Empty.Append("CAST(").Append(left).Append(" AS " + type + ")");
+        }
+
+        return _dialect.Divide(left, right, integral: false);
+    }
+
+    /// <summary>A side of a string concatenation; C# treats a null string as empty, SQL makes the result <c>NULL</c>.</summary>
+    private Sql.Sql NullAsEmpty(Expression node) => StripConvert(node).Type == typeof(string) && CanBeNull(node)
+        ? Sql.Sql.Empty.Append("COALESCE(").Append(Visit(node)).Append(", '')")
+        : Visit(node);
+
     private Sql.Sql Side(Expression node, Expression other)
     {
+        // A condition compared with a bool (x.Age > 18 == flag) must be a value; SQL Server can't compare predicates.
+        if (node.Type == typeof(bool) && DependsOnEntity(node))
+        {
+            return Projected(node);
+        }
+
         if (!DependsOnEntity(node) && EnumTypeOf(other) is { } enumType)
         {
             var value = Evaluate(node);
@@ -290,7 +359,7 @@ internal sealed class ExpressionTranslator
 
         if (node.Member.Name == "Length" && node.Expression?.Type == typeof(string))
         {
-            return Sql.Sql.Empty.Append(_dialect.LengthFunction + "(").Append(Visit(node.Expression)).Append(")");
+            return _dialect.Length(Visit(node.Expression));
         }
 
         if (node.Expression is not null && DatePartOf(node) is { } part)
@@ -369,11 +438,11 @@ internal sealed class ExpressionTranslator
                 case nameof(string.ToLower) when node.Arguments.Count == 0:
                     return Function("LOWER", node.Object!);
                 case nameof(string.Trim) when node.Arguments.Count == 0:
-                    return Function("TRIM", node.Object!);
+                    return _dialect.Trim(Visit(node.Object!), leading: true, trailing: true);
                 case nameof(string.TrimStart) when node.Arguments.Count == 0:
-                    return Function("LTRIM", node.Object!);
+                    return _dialect.Trim(Visit(node.Object!), leading: true, trailing: false);
                 case nameof(string.TrimEnd) when node.Arguments.Count == 0:
-                    return Function("RTRIM", node.Object!);
+                    return _dialect.Trim(Visit(node.Object!), leading: false, trailing: true);
                 case nameof(string.Substring) when node.Arguments.Count is 1 or 2:
                     return _dialect.Substring(
                         Visit(node.Object!),
@@ -387,7 +456,7 @@ internal sealed class ExpressionTranslator
                     return Sql.Sql.Empty.Append("(").Append(value).Append(" IS NULL OR ").Append(value).Append(" = '')");
                 case nameof(string.IsNullOrWhiteSpace):
                     var text = Visit(node.Arguments[0]);
-                    return Sql.Sql.Empty.Append("(").Append(text).Append(" IS NULL OR TRIM(").Append(text).Append(") = '')");
+                    return Sql.Sql.Empty.Append("(").Append(text).Append(" IS NULL OR ").Append(_dialect.Trim(text, leading: true, trailing: true)).Append(" = '')");
                 case nameof(string.Equals) when node.Object is not null && node.Arguments.Count == 1:
                     return Sql.Sql.Empty.Append("(").Append(Visit(node.Object)).Append(" = ").Append(Visit(node.Arguments[0])).Append(")");
             }
@@ -591,13 +660,7 @@ internal sealed class ExpressionTranslator
             return Sql.Sql.Raw("1 = 0");
         }
 
-        // '!' is the escape character because '\' means different things across dialects.
-        var escaped = text.Replace("!", "!!", StringComparison.Ordinal)
-            .Replace("%", "!%", StringComparison.Ordinal)
-            .Replace("_", "!_", StringComparison.Ordinal)
-            .Replace("[", "![", StringComparison.Ordinal);
-        var value = (prefix ? "%" : string.Empty) + escaped + (suffix ? "%" : string.Empty);
-        return Sql.Sql.Empty.Append("(").Append(Visit(target)).Append(" LIKE ").AppendParameter(value, typeof(string)).Append(" ESCAPE '!')");
+        return _dialect.StringMatch(Visit(target), text, prefix, suffix);
     }
 
     private static bool TryGetCollectionContains(MethodCallExpression node, out Expression source, out Expression item)
@@ -636,6 +699,67 @@ internal sealed class ExpressionTranslator
     private static Sql.Sql Parameter(object? value, Type type) => Sql.Sql.Empty.AppendParameter(value, type);
 
     private static bool IsBoolean(Type type) => type == typeof(bool) || type == typeof(bool?);
+
+    private static bool IsIntegral(Type type)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        return !type.IsEnum && Type.GetTypeCode(type) is TypeCode.SByte or TypeCode.Byte or TypeCode.Int16 or TypeCode.UInt16
+            or TypeCode.Int32 or TypeCode.UInt32 or TypeCode.Int64 or TypeCode.UInt64;
+    }
+
+    /// <summary>The type a side has in SQL: a value is sent as its converted type, but a column's conversion is dropped.</summary>
+    private Type SqlType(Expression node) => DependsOnEntity(node) ? StripConvert(node).Type : node.Type;
+
+    /// <summary>Whether an expression can be <c>NULL</c> in SQL: a nullable column, a null value, or a string function of one.</summary>
+    private bool CanBeNull(Expression node)
+    {
+        if (!DependsOnEntity(node))
+        {
+            return Evaluate(node) is null;
+        }
+
+        var stripped = StripConvert(node);
+        if (stripped.Type.IsValueType && Nullable.GetUnderlyingType(stripped.Type) is null)
+        {
+            return false;
+        }
+
+        return stripped switch
+        {
+            // A property declared non-nullable (string, not string?) is taken at its word.
+            MemberExpression { Member: PropertyInfo property, Expression: ParameterExpression } =>
+                new NullabilityInfoContext().Create(property).ReadState != NullabilityState.NotNull,
+            BinaryExpression { NodeType: ExpressionType.Add } add when add.Type == typeof(string) => false,
+            BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce => CanBeNull(coalesce.Right),
+            MethodCallExpression { Object: { } target } call when call.Method.DeclaringType == typeof(string) => CanBeNull(target),
+            _ => true,
+        };
+    }
+
+    /// <summary>Whether a condition can be unknown in SQL, because of a <c>NULL</c>, where C# gives true or false.</summary>
+    private bool MayBeUnknown(Expression node)
+    {
+        node = StripConvert(node);
+        if (!DependsOnEntity(node))
+        {
+            return false;
+        }
+
+        return node switch
+        {
+            BinaryExpression { NodeType: ExpressionType.AndAlso or ExpressionType.OrElse } logical => MayBeUnknown(logical.Left) || MayBeUnknown(logical.Right),
+            // Null checks are never unknown, and Compare makes != never unknown either.
+            BinaryExpression { NodeType: ExpressionType.Equal } equal => !IsNullValue(equal.Left) && !IsNullValue(equal.Right) && (CanBeNull(equal.Left) || CanBeNull(equal.Right)),
+            BinaryExpression { NodeType: ExpressionType.NotEqual } => false,
+            BinaryExpression comparison => CanBeNull(comparison.Left) || CanBeNull(comparison.Right),
+            UnaryExpression { NodeType: ExpressionType.Not } not => not.Type != typeof(bool),
+            MemberExpression { Member.Name: "HasValue" } => false,
+            MemberExpression member => CanBeNull(member),
+            MethodCallExpression call when IsSubquery(call) => false,
+            MethodCallExpression { Method.Name: nameof(string.IsNullOrEmpty) or nameof(string.IsNullOrWhiteSpace) } call when call.Method.DeclaringType == typeof(string) => false,
+            _ => true,
+        };
+    }
 
     private bool IsNullValue(Expression node) => !DependsOnEntity(node) && Evaluate(node) is null;
 

@@ -18,4 +18,25 @@ public abstract class EntityConfiguration
     internal HashSet<string> Ignored { get; } = new(StringComparer.Ordinal);
 
     internal List<LambdaExpression> QueryFilters { get; } = [];
+
+    /// <summary>A copy that later changes to this configuration don't affect.</summary>
+    internal EntityConfiguration Snapshot()
+    {
+        var copy = new Copy { Table = Table, KeyProperties = KeyProperties?.ToArray(), VersionProperty = VersionProperty };
+        foreach (var (property, column) in ColumnNames)
+        {
+            copy.ColumnNames[property] = column;
+        }
+
+        foreach (var (property, generation) in Generation)
+        {
+            copy.Generation[property] = generation;
+        }
+
+        copy.Ignored.UnionWith(Ignored);
+        copy.QueryFilters.AddRange(QueryFilters);
+        return copy;
+    }
+
+    private sealed class Copy : EntityConfiguration;
 }

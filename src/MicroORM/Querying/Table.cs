@@ -106,7 +106,10 @@ public sealed class Table<T> : Query<T>
     /// <summary>
     /// Inserts the entity, or updates the existing row when one with the same key (or the same
     /// <paramref name="on"/> columns) exists, in one atomic statement. A generated key is read back.
+    /// For a versioned entity, an existing row is only updated when its version matches, and the
+    /// version is incremented; that takes an update, then an insert if no row matched, in a transaction.
     /// </summary>
+    /// <exception cref="MicroConcurrencyException">The entity is versioned and the existing row's version differs.</exception>
     /// <param name="entity">The entity to write.</param>
     /// <param name="on">
     /// Columns with a unique constraint to match on, such as <c>u =&gt; u.Email</c> or
@@ -342,6 +345,12 @@ public sealed class Table<T> : Query<T>
             throw new NotSupportedException($"Upsert can't match on '{generated.Property.Name}' because the database generates it; match on columns the entity supplies.");
         }
 
+        if (Map.Version is { } version)
+        {
+            await VersionedUpsertCore(async, entity, conflict, version, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var update = Map.Columns
             .Where(c => c.IsInsertable && !c.IsKey && !c.IsVersion && !conflict.Contains(c))
             .Select(c => c.Name)
@@ -355,6 +364,66 @@ public sealed class Table<T> : Query<T>
 
         var key = await Session.ScalarCore<object>(async, sql, cancellationToken).ConfigureAwait(false);
         identity.SetValue(entity, key, Session.Engine.Handlers);
+    }
+
+    /// <summary>
+    /// Upserts a versioned entity: an existing row is only updated when its version matches, and the
+    /// version is incremented. <c>ON CONFLICT</c>, <c>MERGE</c> and <c>ON DUPLICATE KEY</c> can't
+    /// report a mismatch the same way everywhere, so this updates, then inserts when no row matches,
+    /// in a transaction.
+    /// </summary>
+    private async ValueTask VersionedUpsertCore(bool async, T entity, IReadOnlyList<ColumnMap> conflict, ColumnMap version, CancellationToken cancellationToken)
+    {
+        if (Session is MicroDb db)
+        {
+            var transaction = await db.BeginTransactionCore(async, IsolationLevel.Unspecified, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await transaction.Table<T>().VersionedUpsertCore(async, entity, conflict, version, cancellationToken).ConfigureAwait(false);
+                if (async)
+                {
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    transaction.Commit();
+                }
+
+                return;
+            }
+            finally
+            {
+                await MicroSession.DisposeCore(transaction, async).ConfigureAwait(false);
+            }
+        }
+
+        var match = KeyCondition(conflict, conflict.Select(c => c.GetValue(entity)).ToArray());
+        var assignments = Map.Columns
+            .Where(c => c.IsInsertable && !c.IsKey && !c.IsVersion && !conflict.Contains(c))
+            .Select(c => Sql.Sql.Identifier(c.Name).Append(" = ").AppendParameter(c.GetValue(entity), c.Property.PropertyType))
+            .Append(Sql.Sql.Identifier(version.Name).Append(" = COALESCE(").AppendIdentifier(version.Name).Append(", 0) + 1"));
+        var update = Sql.Sql.Empty.Append("UPDATE ").AppendIdentifier(Map.Table)
+            .Append(" SET ").Append(Sql.Sql.Join(", ", assignments))
+            .Append(" WHERE ").Append(AppendVersion(Sql.Sql.Empty.Append(match), entity));
+        if (await Session.ExecuteCore(async, update, cancellationToken).ConfigureAwait(false) > 0)
+        {
+            version.SetValue(entity, Convert.ToInt64(version.GetValue(entity) ?? 0L, System.Globalization.CultureInfo.InvariantCulture) + 1, Session.Engine.Handlers);
+            if (Map.Identity is { } identity)
+            {
+                var key = Sql.Sql.Empty.Append("SELECT ").AppendIdentifier(identity.Name).Append(" FROM ").AppendIdentifier(Map.Table).Append(" WHERE ").Append(match);
+                identity.SetValue(entity, await Session.ScalarCore<object>(async, key, cancellationToken).ConfigureAwait(false), Session.Engine.Handlers);
+            }
+
+            return;
+        }
+
+        var exists = Sql.Sql.Empty.Append("SELECT 1 FROM ").AppendIdentifier(Map.Table).Append(" WHERE ").Append(match);
+        if (await Session.ScalarCore<object>(async, exists, cancellationToken).ConfigureAwait(false) is not null)
+        {
+            throw Conflict(entity, "upsert");
+        }
+
+        await InsertCore(async, entity, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<bool> ExistsCore(bool async, T entity, CancellationToken cancellationToken)
@@ -372,7 +441,12 @@ public sealed class Table<T> : Query<T>
     private Sql.Sql EntityCondition(T entity)
     {
         var keys = Map.Keys;
-        var condition = KeyCondition(keys, keys.Select(k => k.GetValue(entity)).ToArray());
+        return AppendVersion(KeyCondition(keys, keys.Select(k => k.GetValue(entity)).ToArray()), entity);
+    }
+
+    /// <summary>Appends a match on the entity's version to <paramref name="condition"/>, when it has one.</summary>
+    private Sql.Sql AppendVersion(Sql.Sql condition, T entity)
+    {
         if (Map.Version is { } version)
         {
             var current = version.GetValue(entity);

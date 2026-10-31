@@ -12,8 +12,25 @@ internal sealed class MySqlDialect : SqlDialect
 
     protected override string QuotePart(string part) => "`" + part.Replace("`", "``", StringComparison.Ordinal) + "`";
 
+    public override string DecimalType => "DECIMAL(65, 30)";
+
     public override Sql.Sql Concat(Sql.Sql left, Sql.Sql right) =>
         Sql.Sql.Empty.Append("CONCAT(").Append(left).Append(", ").Append(right).Append(")");
+
+    // MySQL's / always returns a decimal; DIV truncates toward zero, as C# does.
+    public override Sql.Sql Divide(Sql.Sql left, Sql.Sql right, bool integral) => integral
+        ? Sql.Sql.Empty.Append("(").Append(left).Append(" DIV ").Append(right).Append(")")
+        : base.Divide(left, right, integral);
+
+    // MySQL's % works on any number, with the sign of the dividend.
+    public override Sql.Sql Modulo(Sql.Sql left, Sql.Sql right, bool integral) => base.Modulo(left, right, integral: true);
+
+    // TRIM removes a repeated string, not a set of characters.
+    public override Sql.Sql Trim(Sql.Sql value, bool leading, bool trailing) =>
+        Sql.Sql.Empty.Append("REGEXP_REPLACE(").Append(value)
+            .Append(leading && trailing ? ", '^[[:space:]]+|[[:space:]]+$', '')" : leading ? ", '^[[:space:]]+', '')" : ", '[[:space:]]+$', '')");
+
+    public override string EmptyList(string parameter) => "(SELECT " + parameter + " FROM DUAL WHERE 1 = 0)";
 
     public override void AppendPaging(Sql.Sql sql, int? skip, int? take, bool hasOrderBy)
     {

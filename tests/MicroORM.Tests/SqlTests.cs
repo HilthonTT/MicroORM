@@ -36,9 +36,16 @@ public class SqlTests
     }
 
     [Fact]
-    public void Empty_collections_match_nothing()
+    public void Empty_collections_are_a_subquery_without_rows()
     {
-        Assert.Equal("id IN (NULL)", Render($"id IN {Array.Empty<int>()}").Text);
+        // Unlike "IN (NULL)", which NOT IN makes unknown too, so it would match nothing.
+        var rendered = Render($"id NOT IN {Array.Empty<int>()}");
+        Assert.Equal("id NOT IN (SELECT @p0 WHERE 1 = 0)", rendered.Text);
+        var placeholder = Assert.Single(rendered.Parameters);
+        Assert.Null(placeholder.Value);
+        Assert.Equal(typeof(int), placeholder.ClrType);
+
+        Assert.Equal("id IN (SELECT @p0 FROM DUAL WHERE 1 = 0)", Render($"id IN {new List<string>()}", SqlDialect.MySql).Text);
     }
 
     [Fact]

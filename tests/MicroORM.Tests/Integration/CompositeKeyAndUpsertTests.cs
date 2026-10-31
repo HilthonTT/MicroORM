@@ -1,3 +1,4 @@
+using MicroORM.Exceptions;
 using MicroORM.Tests.Model;
 
 using static MicroORM.Tests.Integration.Seed;
@@ -7,6 +8,27 @@ namespace MicroORM.Tests.Integration;
 [Collection(ProviderCollectionDefinition.Name)]
 public class CompositeKeyAndUpsertTests
 {
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Upserting_a_versioned_entity_checks_and_increments_the_version(string provider)
+    {
+        // Quantity stands in for a version on a table whose key the entity supplies.
+        await using var database = await TestDatabase.CreateAsync(provider, o => o.Entity<OrderLine>(e => e.IsVersion(l => l.Quantity)));
+        var lines = database.Db.Table<OrderLine>();
+        var line = new OrderLine { OrderId = 1, LineNo = 1, Product = "Pen", Quantity = 1 };
+        await lines.UpsertAsync(line);
+        Assert.Equal(1, line.Quantity);
+
+        var stale = new OrderLine { OrderId = 1, LineNo = 1, Product = "Stale", Quantity = 0 };
+        await Assert.ThrowsAsync<MicroConcurrencyException>(() => lines.UpsertAsync(stale));
+
+        line.Product = "Ink";
+        await lines.UpsertAsync(line);
+        Assert.Equal(2, line.Quantity);
+        var stored = (await lines.FindAsync((1, 1)))!;
+        Assert.Equal(("Ink", 2), (stored.Product, stored.Quantity));
+    }
+
     [Theory]
     [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
     public async Task Composite_keys_find_update_and_delete(string provider)

@@ -124,7 +124,10 @@ public static class ValueConverter
         {
             return value switch
             {
-                string s => DateTime.Parse(s, inv, DateTimeStyles.RoundtripKind),
+                // Text with an offset is an instant: read as UTC, as a DateTimeOffset is, not in the machine's zone.
+                string s => DateTime.Parse(s, inv, DateTimeStyles.RoundtripKind) is { Kind: DateTimeKind.Local }
+                    ? DateTimeOffset.Parse(s, inv).UtcDateTime
+                    : DateTime.Parse(s, inv, DateTimeStyles.RoundtripKind),
                 DateTimeOffset dto => dto.UtcDateTime,
                 DateOnly d => d.ToDateTime(TimeOnly.MinValue),
                 _ => System.Convert.ToDateTime(value, inv),

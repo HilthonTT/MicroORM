@@ -216,6 +216,29 @@ public class CrudTests
         // An exact column name wins over an earlier one that only matches without underscores.
         var exact = Assert.Single(await database.Db.QueryAsync<NameDto>($"SELECT 1 AS id, 'wrong' AS up_per, 'right' AS upper"));
         Assert.Equal("right", exact.Upper);
+
+        // Value tuples bind by position.
+        var tuple = Assert.Single(await database.Db.QueryAsync<(long Id, string Name)>($"SELECT 7 AS a, 'bob' AS b"));
+        Assert.Equal((7L, "bob"), tuple);
+
+        // A struct nothing binds to would otherwise come back as default.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => database.Db.QueryAsync<PointStruct>($"SELECT 1 AS a"));
+    }
+
+    [Fact]
+    public async Task Ignored_properties_are_not_filled_from_results()
+    {
+        await using var database = await TestDatabase.CreateAsync("sqlite", o => o.Entity<Secretive>(e => e.Ignore(s => s.Secret)));
+
+        var secretive = Assert.Single(await database.Db.QueryAsync<Secretive>($"SELECT 1 AS id, 'x' AS secret"));
+        Assert.Equal((1, null), (secretive.Id, secretive.Secret));
+    }
+
+    public sealed class Secretive
+    {
+        public int Id { get; set; }
+
+        public string? Secret { get; set; }
     }
 
     [Table("micro_counters")]

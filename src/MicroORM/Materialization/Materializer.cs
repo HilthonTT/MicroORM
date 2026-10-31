@@ -134,6 +134,33 @@ internal sealed class Materializer
     private Func<DbDataReader, T> BuildEntityReader<T>(string[] names, int start)
     {
         var type = typeof(T);
+        var reader = Expression.Parameter(typeof(DbDataReader), "reader");
+        Expression Read(int ordinal, Type target)
+        {
+            var raw = Expression.Call(reader, GetValueMethod, Expression.Constant(ordinal));
+            return _handlers.TryGet(target, out var handler)
+                ? Expression.Call(ReadWithMethod.MakeGenericMethod(target), Expression.Constant(handler, typeof(ITypeHandler)), raw)
+                : Expression.Call(ToMethod.MakeGenericMethod(target), raw);
+        }
+
+        // A value tuple's elements are fields named Item1, Item2...; they are read by position.
+        if (IsValueTuple(type))
+        {
+            var elements = type.GetGenericArguments();
+            if (elements.Length > 7)
+            {
+                throw new NotSupportedException($"Cannot materialize '{type}': value tuples of more than 7 elements aren't supported.");
+            }
+
+            if (names.Length < elements.Length)
+            {
+                throw new InvalidOperationException($"Cannot materialize '{type}': it has {elements.Length} elements but the result has {names.Length} columns.");
+            }
+
+            var tuple = Expression.New(type.GetConstructor(elements)!, elements.Select((element, i) => Read(start + i, element)));
+            return Expression.Lambda<Func<DbDataReader, T>>(tuple, reader).Compile();
+        }
+
         var map = _mappings.GetMap(type);
 
         // Every name a column may go by, pointing at its ordinal in the reader. Exact names first,
@@ -164,15 +191,6 @@ internal sealed class Materializer
                 : null;
         }
 
-        var reader = Expression.Parameter(typeof(DbDataReader), "reader");
-        Expression Read(int ordinal, Type target)
-        {
-            var raw = Expression.Call(reader, GetValueMethod, Expression.Constant(ordinal));
-            return _handlers.TryGet(target, out var handler)
-                ? Expression.Call(ReadWithMethod.MakeGenericMethod(target), Expression.Constant(handler, typeof(ITypeHandler)), raw)
-                : Expression.Call(ToMethod.MakeGenericMethod(target), raw);
-        }
-
         var (constructor, arguments) = ChooseConstructor(type, OrdinalOf);
         var parameters = constructor?.GetParameters() ?? [];
         var newExpression = constructor is null
@@ -183,7 +201,9 @@ internal sealed class Materializer
         var bindings = new List<MemberBinding>();
         foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-            if (bound.Contains(property.Name) || property.SetMethod is not { IsPublic: true } || property.GetIndexParameters().Length > 0)
+            // Ignored and [NotMapped] properties aren't columns, so a result column of the same name doesn't fill them.
+            if (bound.Contains(property.Name) || property.SetMethod is not { IsPublic: true } || property.GetIndexParameters().Length > 0 ||
+                map.FindByProperty(property.Name) is null)
             {
                 continue;
             }
@@ -192,6 +212,13 @@ internal sealed class Materializer
             {
                 bindings.Add(Expression.Bind(property, Read(ordinal, property.PropertyType)));
             }
+        }
+
+        // A struct always has a default constructor, so with nothing bound it would silently come back empty.
+        if (constructor is null && bindings.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Cannot materialize '{type.Name}': none of its constructors or settable properties match the result columns ({string.Join(", ", names)}).");
         }
 
         Expression body = bindings.Count > 0 ? Expression.MemberInit(newExpression, bindings) : newExpression;
@@ -237,6 +264,9 @@ internal sealed class Materializer
 
         return new Row(schema, values);
     }
+
+    private static bool IsValueTuple(Type type) =>
+        type.IsGenericType && type.IsValueType && type.FullName?.StartsWith("System.ValueTuple`", StringComparison.Ordinal) == true;
 
     private static string Normalize(string name) => name.Replace("_", string.Empty, StringComparison.Ordinal);
 }

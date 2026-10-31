@@ -284,6 +284,7 @@ public abstract partial class MicroSession
             command.CommandTimeout = timeout;
         }
 
+        prepared.Procedure?.ResetOutputs();
         for (var i = 0; i < prepared.Parameters.Count; i++)
         {
             var value = prepared.Parameters[i];

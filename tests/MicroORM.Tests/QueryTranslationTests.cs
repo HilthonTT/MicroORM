@@ -74,13 +74,17 @@ public class QueryTranslationTests
     [Fact]
     public void String_methods_become_escaped_like_patterns()
     {
-        var query = People.Where(p => p.Name.Contains("50%_off!")).ToSql().Render(SqlDialect.Sqlite);
+        var postgres = new MicroDb(SqlDialect.PostgreSql, NoConnection, new MicroOptions { Naming = NamingConvention.SnakeCase }).Table<Person>();
+        var query = postgres.Where(p => p.Name.Contains("50%_off!")).ToSql().Render(SqlDialect.PostgreSql);
 
         Assert.EndsWith("(\"name\" LIKE @p0 ESCAPE '!')", query.Text, StringComparison.Ordinal);
         Assert.Equal("%50!%!_off!!%", query.Parameters[0].Value);
-        Assert.Equal("(\"name\" LIKE @p0 ESCAPE '!')", Where(p => p.Name.StartsWith("A")));
-        Assert.Equal("(\"name\" LIKE @p0 ESCAPE '!')", Where(p => p.Name.EndsWith('_')));
-        Assert.Equal("%!_", People.Where(p => p.Name.EndsWith('_')).ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
+        Assert.Equal("%!_", postgres.Where(p => p.Name.EndsWith('_')).ToSql().Render(SqlDialect.PostgreSql).Parameters[0].Value);
+
+        // SQLite's LIKE ignores case, unlike its =; GLOB doesn't, and brackets match its wildcards literally.
+        Assert.Equal("(\"name\" GLOB @p0)", Where(p => p.Name.StartsWith("A")));
+        Assert.Equal("[*]a[?][[]*", People.Where(p => p.Name.StartsWith("*a?[")).ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
+        Assert.Equal("*_", People.Where(p => p.Name.EndsWith('_')).ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
         Assert.Equal("(UPPER(\"name\") = @p0)", Where(p => p.Name.ToUpper() == "ANN"));
         Assert.Equal("(LENGTH(\"name\") > @p0)", Where(p => p.Name.Length > 3));
     }
@@ -88,10 +92,11 @@ public class QueryTranslationTests
     [Fact]
     public void More_string_methods_translate()
     {
-        Assert.Equal("(LTRIM(\"name\") = @p0)", Where(p => p.Name.TrimStart() == "x"));
-        Assert.Equal("(RTRIM(\"name\") = @p0)", Where(p => p.Name.TrimEnd() == "x"));
+        Assert.Equal("(LTRIM(\"name\", @p0) = @p1)", Where(p => p.Name.TrimStart() == "x"));
+        Assert.Equal("(RTRIM(\"name\", @p0) = @p1)", Where(p => p.Name.TrimEnd() == "x"));
         Assert.Equal("(REPLACE(\"name\", @p0, @p1) = @p2)", Where(p => p.Name.Replace('-', ' ') == "x"));
-        Assert.Equal("(\"email\" IS NULL OR TRIM(\"email\") = '')", Where(p => string.IsNullOrWhiteSpace(p.Email)));
+        Assert.Equal("(\"email\" IS NULL OR TRIM(\"email\", @p0) = '')", Where(p => string.IsNullOrWhiteSpace(p.Email)));
+        Assert.Equal(" \t\n\r\v\f", People.Where(p => p.Name.Trim() == "x").ToSql().Render(SqlDialect.Sqlite).Parameters[0].Value);
         Assert.Equal("(SUBSTR(\"name\", (\"age\" + 1)) = @p0)", Where(p => p.Name.Substring(p.Age) == "x"));
 
         var query = People.Where(p => p.Name.Substring(1, 2) == "da").ToSql().Render(SqlDialect.Sqlite);
@@ -154,6 +159,41 @@ public class QueryTranslationTests
         // SQL Server has no boolean values: a condition used as one becomes a CASE.
         Assert.Contains("ORDER BY CASE WHEN ([Email] IS NULL) THEN 1 ELSE 0 END", sqlServer.OrderBy(p => p.Email == null).ToString(), StringComparison.Ordinal);
         Assert.Contains("(CONCAT(`Name`, @p0) = @p1)", mySql.Where(p => p.Name + "!" == "x!").ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Comparisons_keep_csharp_null_semantics()
+    {
+        // A nullable column differs from a value when it is NULL; a non-nullable one needs no check.
+        Assert.Equal("(\"email\" <> @p0 OR \"email\" IS NULL)", Where(p => p.Email != "x"));
+        Assert.Equal("(\"name\" <> @p0)", Where(p => p.Name != "x"));
+        Assert.Equal("(\"external_id\" = \"external_id\" OR (\"external_id\" IS NULL AND \"external_id\" IS NULL))", Where(p => p.ExternalId == p.ExternalId));
+
+        // NOT of a condition that can be unknown would drop the rows with a NULL.
+        Assert.Equal("(CASE WHEN (\"email\" GLOB @p0) THEN 0 ELSE 1 END = 1)", Where(p => !p.Email!.StartsWith("a")));
+        Assert.Equal("NOT ((\"active\" = @p0))", Where(p => !p.Active));
+        Assert.Equal("NOT ((\"email\" <> @p0 OR \"email\" IS NULL))", Where(p => !(p.Email != "x")));
+    }
+
+    [Fact]
+    public void Arithmetic_keeps_csharp_types_on_every_dialect()
+    {
+        Assert.Equal("((CAST(\"age\" AS REAL) / (\"id\" + @p0)) > @p1)", Where(p => (double)p.Age / (p.Id + 9) > 1));
+        Assert.Equal("((\"age\" / @p0) = @p1)", Where(p => p.Age / 10.0 == 3));
+        Assert.Equal("(((\"age\" + @p0) - @p1 * CAST((\"age\" + @p2) / @p3 AS INTEGER)) = @p4)", Where(p => (p.Age + 0.5) % 2 == 0.5));
+        Assert.Equal("((COALESCE(\"email\", '') || \"name\") = @p0)", Where(p => p.Email + p.Name == "x"));
+
+        var sqlServer = new MicroDb(SqlDialect.SqlServer, NoConnection).Table<Person>();
+        var mySql = new MicroDb(SqlDialect.MySql, NoConnection).Table<Person>();
+        var flag = true;
+        Assert.Contains("(CASE WHEN ([Age] > @p0) THEN 1 ELSE 0 END = @p1)", sqlServer.Where(p => (p.Age > 18) == flag).ToString(), StringComparison.Ordinal);
+        Assert.Contains("((LEN([Name] + N'x') - 1) = @p0)", sqlServer.Where(p => p.Name.Length == 4).ToString(), StringComparison.Ordinal);
+        Assert.Contains("(([Age] - @p0 * ROUND([Age] / @p1, 0, 1)) = @p2)", sqlServer.Where(p => p.Age % 2.5 == 1).ToString(), StringComparison.Ordinal);
+        Assert.Contains("(TRIM(@p0 FROM [Name]) = @p1)", sqlServer.Where(p => p.Name.Trim() == "x").ToString(), StringComparison.Ordinal);
+        Assert.Contains("((CAST([Age] AS DECIMAL(38, 18)) / [Id]) > @p0)", sqlServer.Where(p => (decimal)p.Age / p.Id > 1).ToString(), StringComparison.Ordinal);
+        Assert.Contains("((`Age` DIV @p0) = @p1)", mySql.Where(p => p.Age / 10 == 3).ToString(), StringComparison.Ordinal);
+        Assert.Contains("(CONCAT(`Name`, COALESCE(`Email`, '')) = @p0)", mySql.Where(p => p.Name + p.Email == "x").ToString(), StringComparison.Ordinal);
+        Assert.Contains("(REGEXP_REPLACE(`Name`, '^[[:space:]]+', '') = @p0)", mySql.Where(p => p.Name.TrimStart() == "x").ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
