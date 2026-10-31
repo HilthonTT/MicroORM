@@ -15,6 +15,7 @@ internal sealed class EntityFinder : ExpressionVisitor
         _subqueries = subqueries;
     }
 
+    /// <summary>Whether <paramref name="node"/> depends on the row (or holds a subquery, when asked).</summary>
     /// <param name="node">The expression to search.</param>
     /// <param name="parameters">The parameters that make an expression depend on the row.</param>
     /// <param name="subqueries">

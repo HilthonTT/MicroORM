@@ -138,8 +138,9 @@ public class MappingTests
     public void Concurrency_check_marks_the_version()
     {
         var version = Map<Document>().Version;
-        Assert.Equal(nameof(Document.Version), version?.Property.Name);
-        Assert.True(version!.IsInsertable);
+        Assert.NotNull(version);
+        Assert.Equal(nameof(Document.Version), version.Property.Name);
+        Assert.True(version.IsInsertable);
         Assert.False(version.IsUpdatable);
     }
 

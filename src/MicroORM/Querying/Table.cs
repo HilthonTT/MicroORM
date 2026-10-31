@@ -259,7 +259,7 @@ public sealed class Table<T> : Query<T>
     private async ValueTask<bool> UpdateCore(bool async, T entity, IReadOnlyList<ColumnMap>? columns, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entity);
-        var keys = Map.RequireKeys("Update");
+        Map.RequireKeys("Update");
         var version = Map.Version;
         var assignments = (columns ?? Map.Columns.Where(c => c.IsUpdatable))
             .Select(c => Sql.Sql.Identifier(c.Name).Append(" = ").AppendParameter(c.GetValue(entity), c.Property.PropertyType))

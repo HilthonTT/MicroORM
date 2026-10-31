@@ -163,10 +163,10 @@ public abstract partial class MicroSession
             async ? await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) : command.ExecuteNonQuery(), cancellationToken);
 
     internal ValueTask<T?> ScalarCore<T>(bool async, Sql.Sql sql, CancellationToken cancellationToken) =>
-        RunCore(async, Prepare(sql), async (command, async, ct) =>
+        RunCore<T?>(async, Prepare(sql), async (command, async, ct) =>
         {
             var value = async ? await command.ExecuteScalarAsync(ct).ConfigureAwait(false) : command.ExecuteScalar();
-            return (T?)Engine.Handlers.Convert<T>(value);
+            return Engine.Handlers.Convert<T>(value);
         }, cancellationToken);
 
     internal ValueTask<List<TResult>> SplitCore<TResult>(bool async, Sql.Sql sql, Type[] types, string splitOn, Func<object?[], TResult> map, CancellationToken cancellationToken)

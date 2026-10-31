@@ -84,7 +84,7 @@ internal sealed class ExpressionTranslator
     {
         var translator = new ExpressionTranslator(map, lambda.Parameters[0], dialect);
         IEnumerable<(string? Name, Expression Value)> items = lambda.Body is NewExpression { Members: { } members } anonymous
-            ? anonymous.Arguments.Select((a, i) => ((string?)members[i].Name, a))
+            ? anonymous.Arguments.Select<Expression, (string?, Expression)>((a, i) => (members[i].Name, a))
             : [(null, lambda.Body)];
 
         return items.Select(item => (

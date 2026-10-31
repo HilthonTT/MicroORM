@@ -41,12 +41,9 @@ public sealed class TestDatabase : IAsyncDisposable
     public static TheoryData<string> With(string[] candidates)
     {
         var providers = new TheoryData<string>();
-        foreach (var name in candidates)
+        foreach (var name in candidates.Where(IsConfigured))
         {
-            if (IsConfigured(name))
-            {
-                providers.Add(name);
-            }
+            providers.Add(name);
         }
 
         return providers;
@@ -62,6 +59,7 @@ public sealed class TestDatabase : IAsyncDisposable
         .AddTypeHandler(new JsonbHandler<Address>())
         .AddJsonColumn<List<string>>();
 
+    /// <summary>Creates a fresh database for <paramref name="provider"/> with the test schema.</summary>
     /// <param name="provider">The provider name.</param>
     /// <param name="configure">Changes to the options, such as query filters.</param>
     public static async Task<TestDatabase> CreateAsync(string provider, Action<MicroOptions>? configure = null)

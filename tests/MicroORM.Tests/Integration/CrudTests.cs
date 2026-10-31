@@ -168,6 +168,7 @@ public class CrudTests
         {
             await foreach (var _ in database.Db.StreamAsync<int>($"SELECT 'not a number'"))
             {
+                // Enumerating is what reads the bad value.
             }
         });
         Assert.NotNull(Assert.Single(database.Log).Error);
