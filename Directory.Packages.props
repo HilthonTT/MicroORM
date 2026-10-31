@@ -6,7 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Build -->
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.402" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.403" />
     <!-- Database providers (tests and samples only; MicroORM itself has no provider dependency) -->
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
