@@ -212,7 +212,7 @@ public class QueryTranslationTests
     {
         var error = Assert.Throws<NotSupportedException>(() => People.Where(p => p.DisplayName == "x"));
         Assert.Contains("not a mapped column", error.Message, StringComparison.Ordinal);
-        Assert.Throws<NotSupportedException>(() => People.Where(p => p.Name.PadLeft(3) == "x"));
+        Assert.Throws<NotSupportedException>(() => People.Where(p => p.Name.Normalize() == "x"));
     }
 
     [Fact]

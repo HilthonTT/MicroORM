@@ -144,6 +144,9 @@ internal sealed class ExpressionTranslator
             UnaryExpression { NodeType: ExpressionType.Not } or
             MethodCallExpression => Visit(node),
             MemberExpression { Member.Name: "HasValue" } => Visit(node),
+            ConditionalExpression conditional when !DependsOnEntity(conditional.Test) =>
+                Condition(Evaluate(conditional.Test) is true ? conditional.IfTrue : conditional.IfFalse),
+            ConditionalExpression conditional => Sql.Sql.Empty.Append("(").Append(VisitConditional(conditional)).Append(" = 1)"),
             _ => Sql.Sql.Empty.Append("(").Append(Visit(node)).Append(" = ").AppendParameter(true, typeof(bool)).Append(")"),
         };
     }
@@ -176,9 +179,13 @@ internal sealed class ExpressionTranslator
             // On integers, ExpressionType.Not is the bitwise complement (~x), not a logical NOT.
             UnaryExpression { NodeType: ExpressionType.Not } not when IsBoolean(not.Type) => Negate(not),
             UnaryExpression { NodeType: ExpressionType.Negate } negate => Sql.Sql.Empty.Append("-(").Append(Visit(negate.Operand)).Append(")"),
+            // A C# cast from a fraction to an integer truncates; SQL keeps the fraction, or rounds.
+            UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert when IsIntegral(convert.Type) && IsFractional(convert.Operand.Type) =>
+                _dialect.ToInteger(Visit(convert.Operand)),
             UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert => Visit(convert.Operand),
             MemberExpression member => VisitMember(member),
             MethodCallExpression call => VisitCall(call),
+            ConditionalExpression conditional => VisitConditional(conditional),
             _ => throw Unsupported(node),
         };
     }
@@ -215,6 +222,15 @@ internal sealed class ExpressionTranslator
                 return Infix(node, " >= ");
             case ExpressionType.Add when node.Type == typeof(string):
                 return _dialect.Concat(NullAsEmpty(node.Left), NullAsEmpty(node.Right));
+            case ExpressionType.Add or ExpressionType.Subtract when IsDateTime(node.Left.Type) && IsTimeSpan(node.Right.Type) && !DependsOnEntity(node.Right):
+                // date ± a TimeSpan value adds its seconds.
+                var span = Evaluate(node.Right) as TimeSpan? ?? throw Unsupported(node);
+                var seconds = node.NodeType == ExpressionType.Add ? span.TotalSeconds : -span.TotalSeconds;
+                return _dialect.DateAdd(DatePart.Second, Visit(node.Left), Number(seconds, out var whole), whole, dateOnly: false);
+            case ExpressionType.Add or ExpressionType.AddChecked or ExpressionType.Subtract or ExpressionType.SubtractChecked
+                when IsDateOrTime(node.Left.Type) || IsDateOrTime(node.Right.Type):
+                // date - date is a TimeSpan, which only translates through its Total* members.
+                throw Unsupported(node);
             case ExpressionType.Add or ExpressionType.AddChecked:
                 return Infix(node, " + ");
             case ExpressionType.Subtract or ExpressionType.SubtractChecked:
@@ -298,6 +314,11 @@ internal sealed class ExpressionTranslator
         ? Sql.Sql.Empty.Append("COALESCE(").Append(Visit(node)).Append(", '')")
         : Visit(node);
 
+    /// <summary>The text <paramref name="sql"/> of <paramref name="node"/>, empty when the node is null.</summary>
+    private Sql.Sql NullAsEmpty(Expression node, Sql.Sql sql) => CanBeNull(node)
+        ? Sql.Sql.Empty.Append("COALESCE(").Append(sql).Append(", '')")
+        : sql;
+
     private Sql.Sql Side(Expression node, Expression other)
     {
         // A condition compared with a bool (x.Age > 18 == flag) must be a value; SQL Server can't compare predicates.
@@ -309,14 +330,7 @@ internal sealed class ExpressionTranslator
         // The condition's side is then an integer, so this side must be one too: PostgreSQL can't compare integer and boolean.
         if (IsBoolean(node.Type) && IsProjectedCondition(other))
         {
-            if (!DependsOnEntity(node))
-            {
-                return Evaluate(node) is bool flag ? Parameter(flag ? 1 : 0, typeof(int)) : Parameter(null, typeof(int));
-            }
-
-            // A NULL stays NULL, so it equals neither 1 nor 0.
-            var condition = Condition(node);
-            return Sql.Sql.Empty.Append("CASE WHEN ").Append(condition).Append(" THEN 1 WHEN NOT ").Append(condition).Append(" THEN 0 END");
+            return BoolAsInt(node);
         }
 
         if (!DependsOnEntity(node) && EnumTypeOf(other) is { } enumType)
@@ -383,7 +397,63 @@ internal sealed class ExpressionTranslator
             return _dialect.DatePart(part, Visit(node.Expression));
         }
 
+        if (node.Member.Name == nameof(DateTime.Date) && node.Expression?.Type == typeof(DateTime))
+        {
+            return _dialect.StartOfDay(Visit(node.Expression));
+        }
+
+        // (end - start).TotalDays and friends.
+        if (node.Expression is BinaryExpression { NodeType: ExpressionType.Subtract } difference &&
+            difference.Left.Type == typeof(DateTime) && difference.Right.Type == typeof(DateTime) &&
+            SecondsPer(node.Member.Name) is { } divisor)
+        {
+            var seconds = _dialect.SecondsBetween(Visit(difference.Right), Visit(difference.Left));
+            return divisor == 1 ? seconds : Sql.Sql.Empty.Append("(").Append(seconds).Append(" / " + divisor.ToString(CultureInfo.InvariantCulture) + ".0)");
+        }
+
         throw Unsupported(node);
+    }
+
+    /// <summary>The seconds in the unit of a <see cref="TimeSpan"/> total, such as 86400 for <c>TotalDays</c>.</summary>
+    private static int? SecondsPer(string member) => member switch
+    {
+        nameof(TimeSpan.TotalDays) => 86400,
+        nameof(TimeSpan.TotalHours) => 3600,
+        nameof(TimeSpan.TotalMinutes) => 60,
+        nameof(TimeSpan.TotalSeconds) => 1,
+        _ => null,
+    };
+
+    /// <summary>Translates <c>test ? a : b</c>; a bool result is 1 or 0, so SQL Server and PostgreSQL can use it as a value.</summary>
+    private Sql.Sql VisitConditional(ConditionalExpression node)
+    {
+        if (!DependsOnEntity(node.Test))
+        {
+            return Visit(Evaluate(node.Test) is true ? node.IfTrue : node.IfFalse);
+        }
+
+        var boolean = IsBoolean(node.Type);
+        return Sql.Sql.Empty.Append("CASE WHEN ").Append(Condition(node.Test))
+            .Append(" THEN ").Append(boolean ? BoolAsInt(node.IfTrue) : Visit(node.IfTrue))
+            .Append(" ELSE ").Append(boolean ? BoolAsInt(node.IfFalse) : Visit(node.IfFalse)).Append(" END");
+    }
+
+    /// <summary>A bool as the integer 1 or 0, or <c>NULL</c> for a null bool.</summary>
+    private Sql.Sql BoolAsInt(Expression node)
+    {
+        if (!DependsOnEntity(node))
+        {
+            return Evaluate(node) is bool flag ? Parameter(flag ? 1 : 0, typeof(int)) : Parameter(null, typeof(int));
+        }
+
+        if (IsProjectedCondition(node))
+        {
+            return Projected(node);
+        }
+
+        // A bool column: NULL stays NULL, so it equals neither 1 nor 0.
+        var condition = Condition(node);
+        return Sql.Sql.Empty.Append("CASE WHEN ").Append(condition).Append(" THEN 1 WHEN NOT ").Append(condition).Append(" THEN 0 END");
     }
 
     /// <summary>Translates <c>g.Key</c>, or a member of a composite key (<c>g.Key.Name</c>).</summary>
@@ -475,6 +545,55 @@ internal sealed class ExpressionTranslator
                     return Sql.Sql.Empty.Append("(").Append(text).Append(" IS NULL OR ").Append(_dialect.Trim(text, leading: true, trailing: true)).Append(" = '')");
                 case nameof(string.Equals) when node.Object is not null && node.Arguments.Count == 1:
                     return Sql.Sql.Empty.Append("(").Append(Visit(node.Object)).Append(" = ").Append(Visit(node.Arguments[0])).Append(")");
+                case nameof(string.IndexOf) when node.Object is not null && node.Arguments.Count == 1 && IsText(node.Arguments[0].Type):
+                    // Like C#, the empty string is found at 0 (SQL Server's CHARINDEX finds it nowhere).
+                    return !DependsOnEntity(node.Arguments[0]) && Evaluate(node.Arguments[0]) is ""
+                        ? Parameter(0, typeof(int))
+                        : Sql.Sql.Empty.Append("(").Append(_dialect.Position(Visit(node.Object), Text(node.Arguments[0]))).Append(" - 1)");
+                case nameof(string.PadLeft) or nameof(string.PadRight) when node.Object is not null && node.Arguments.Count is 1 or 2:
+                    return _dialect.Pad(
+                        Visit(node.Object),
+                        Visit(node.Arguments[0]),
+                        node.Arguments.Count == 2 ? Text(node.Arguments[1]) : Parameter(" ", typeof(string)),
+                        left: method.Name == nameof(string.PadLeft));
+                case nameof(string.Compare) when node.Object is null && node.Arguments.Count == 2 && node.Arguments.All(a => a.Type == typeof(string)):
+                    return CompareStrings(node.Arguments[0], node.Arguments[1]);
+                case nameof(string.CompareTo) when node.Object is not null && node.Arguments.Count == 1 && node.Arguments[0].Type == typeof(string):
+                    return CompareStrings(node.Object, node.Arguments[0]);
+                case nameof(string.Concat) when node.Object is null:
+                    return Concat(node.Arguments is [NewArrayExpression { NodeType: ExpressionType.NewArrayInit } array] ? array.Expressions : node.Arguments, node);
+                case nameof(string.Format) when node.Object is null && node.Arguments.Count >= 2 && node.Arguments[0].Type == typeof(string):
+                    return Format(node);
+                case nameof(ToString) when node.Object is not null && node.Arguments.Count == 0:
+                    return Visit(node.Object);
+            }
+        }
+
+        if (method.Name == nameof(ToString) && node.Object is not null && node.Arguments.Count == 0 && IsIntegral(node.Object.Type))
+        {
+            // Nullable<int>.ToString() is "" for null.
+            return NullAsEmpty(node.Object, CastToText(Visit(node.Object)));
+        }
+
+        if ((method.DeclaringType == typeof(DateTime) || method.DeclaringType == typeof(DateOnly)) && node.Object is not null &&
+            node.Arguments.Count == 1 && DateUnitOf(method.Name) is { } unit)
+        {
+            return _dialect.DateAdd(unit, Visit(node.Object), Amount(node.Arguments[0], out var whole), whole, dateOnly: method.DeclaringType == typeof(DateOnly));
+        }
+
+        if (method.DeclaringType == typeof(Math) && node.Arguments.Count == 2)
+        {
+            switch (method.Name)
+            {
+                case nameof(Math.Pow):
+                    // Cast, or SQL Server returns the type of the base: POWER(2, 0.5) is 1.
+                    return Sql.Sql.Empty.Append("POWER(CAST(").Append(Visit(node.Arguments[0])).Append(" AS " + _dialect.FloatType + "), ")
+                        .Append(Visit(node.Arguments[1])).Append(")");
+                case nameof(Math.Min) or nameof(Math.Max):
+                    var a = Visit(node.Arguments[0]);
+                    var b = Visit(node.Arguments[1]);
+                    return Sql.Sql.Empty.Append("CASE WHEN ").Append(a).Append(method.Name == nameof(Math.Min) ? " <= " : " >= ").Append(b)
+                        .Append(" THEN ").Append(a).Append(" ELSE ").Append(b).Append(" END");
             }
         }
 
@@ -489,6 +608,8 @@ internal sealed class ExpressionTranslator
                     return Function("FLOOR", node.Arguments[0]);
                 case nameof(Math.Ceiling):
                     return Function("CEILING", node.Arguments[0]);
+                case nameof(Math.Sqrt):
+                    return Function("SQRT", node.Arguments[0]);
             }
         }
 
@@ -645,6 +766,166 @@ internal sealed class ExpressionTranslator
         }
     }
 
+    /// <summary>
+    /// Translates <c>string.Compare(a, b)</c> or <c>a.CompareTo(b)</c>: -1, 0 or 1 in the database's
+    /// collation, with <see langword="null"/> before any string as in C#.
+    /// </summary>
+    private Sql.Sql CompareStrings(Expression left, Expression right)
+    {
+        var a = Visit(left);
+        var b = Visit(right);
+        var sql = Sql.Sql.Empty.Append("CASE");
+        if (CanBeNull(left) || CanBeNull(right))
+        {
+            sql.Append(" WHEN ").Append(a).Append(" IS NULL AND ").Append(b).Append(" IS NULL THEN 0 WHEN ")
+                .Append(a).Append(" IS NULL THEN -1 WHEN ").Append(b).Append(" IS NULL THEN 1");
+        }
+
+        return sql.Append(" WHEN ").Append(a).Append(" = ").Append(b).Append(" THEN 0 WHEN ").Append(a).Append(" < ").Append(b).Append(" THEN -1 ELSE 1 END");
+    }
+
+    /// <summary>Translates <c>string.Concat(...)</c>, treating null as empty as C# does.</summary>
+    private Sql.Sql Concat(IReadOnlyList<Expression> parts, Expression node)
+    {
+        if (parts.Any(p => typeof(IEnumerable).IsAssignableFrom(p.Type) && p.Type != typeof(string)))
+        {
+            throw Unsupported(node);
+        }
+
+        return ConcatPieces(parts.Select(p => ConcatPiece(p, node)).ToList());
+    }
+
+    /// <summary>
+    /// Translates <c>string.Format</c> with a format string known up front, as interpolated strings
+    /// compile to in expression trees: <c>$"{x.First} {x.Last}"</c>. Placeholders can't have an
+    /// alignment or a format, which follow .NET's culture rules.
+    /// </summary>
+    private Sql.Sql Format(MethodCallExpression node)
+    {
+        var format = node.Arguments[0];
+        IReadOnlyList<Expression> arguments = node.Arguments.Count == 2 && node.Arguments[1] is NewArrayExpression { NodeType: ExpressionType.NewArrayInit } array
+            ? array.Expressions
+            : node.Arguments.Skip(1).ToList();
+        if (DependsOnEntity(format) || Evaluate(format) is not string text)
+        {
+            throw Unsupported(node);
+        }
+
+        var pieces = new List<Sql.Sql>();
+        var literal = new System.Text.StringBuilder();
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if ((c == '{' || c == '}') && i + 1 < text.Length && text[i + 1] == c)
+            {
+                literal.Append(c);
+                i++;
+                continue;
+            }
+
+            if (c == '}')
+            {
+                throw Unsupported(node);
+            }
+
+            if (c != '{')
+            {
+                literal.Append(c);
+                continue;
+            }
+
+            var end = text.IndexOf('}', i);
+            if (end < 0 || !int.TryParse(text.AsSpan(i + 1, end - i - 1), NumberStyles.None, CultureInfo.InvariantCulture, out var index) || index >= arguments.Count)
+            {
+                throw new NotSupportedException($"MicroORM cannot translate '{node}': placeholders can't have an alignment or a format, such as {{0:N2}}; format the value in .NET instead.");
+            }
+
+            if (literal.Length > 0)
+            {
+                pieces.Add(Parameter(literal.ToString(), typeof(string)));
+                literal.Clear();
+            }
+
+            pieces.Add(ConcatPiece(arguments[index], node));
+            i = end;
+        }
+
+        if (literal.Length > 0)
+        {
+            pieces.Add(Parameter(literal.ToString(), typeof(string)));
+        }
+
+        return ConcatPieces(pieces);
+    }
+
+    private Sql.Sql ConcatPieces(List<Sql.Sql> pieces) => pieces.Count switch
+    {
+        0 => Parameter(string.Empty, typeof(string)),
+        1 => pieces[0],
+        _ => pieces.Skip(1).Aggregate(pieces[0], _dialect.Concat),
+    };
+
+    /// <summary>
+    /// One value of a concatenation, as text: a value is formatted in .NET, a string column is
+    /// empty when null, and an integer column is cast. Other columns (numbers with fractions,
+    /// dates) format differently in SQL and are rejected.
+    /// </summary>
+    private Sql.Sql ConcatPiece(Expression node, Expression call)
+    {
+        var value = StripConvert(node);
+        if (!DependsOnEntity(value))
+        {
+            return Parameter(Evaluate(value)?.ToString() ?? string.Empty, typeof(string));
+        }
+
+        if (value.Type == typeof(string))
+        {
+            return NullAsEmpty(value);
+        }
+
+        return IsIntegral(value.Type)
+            ? NullAsEmpty(value, CastToText(Visit(value)))
+            : throw new NotSupportedException($"MicroORM cannot translate '{call}': only strings and integers can be concatenated, since SQL formats {value.Type.Name} differently from .NET.");
+    }
+
+    private Sql.Sql CastToText(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(").Append(value).Append(" AS " + _dialect.TextType + ")");
+
+    /// <summary>The unit an <c>AddYears</c>...<c>AddSeconds</c> method of <see cref="DateTime"/> or <see cref="DateOnly"/> adds.</summary>
+    private static DatePart? DateUnitOf(string method) => method switch
+    {
+        nameof(DateTime.AddYears) => DatePart.Year,
+        nameof(DateTime.AddMonths) => DatePart.Month,
+        nameof(DateTime.AddDays) => DatePart.Day,
+        nameof(DateTime.AddHours) => DatePart.Hour,
+        nameof(DateTime.AddMinutes) => DatePart.Minute,
+        nameof(DateTime.AddSeconds) => DatePart.Second,
+        _ => null,
+    };
+
+    /// <summary>The amount a date method adds, and whether it is known to be a whole number.</summary>
+    private Sql.Sql Amount(Expression node, out bool whole)
+    {
+        if (!DependsOnEntity(node))
+        {
+            return Number(Convert.ToDouble(Evaluate(node), CultureInfo.InvariantCulture), out whole);
+        }
+
+        whole = IsIntegral(StripConvert(node).Type);
+        return Visit(node);
+    }
+
+    /// <summary>A number as a parameter: an integer when it is whole, as SQL Server's DATEADD needs.</summary>
+    private static Sql.Sql Number(double value, out bool whole)
+    {
+        whole = value == Math.Floor(value) && Math.Abs(value) <= long.MaxValue;
+        if (!whole)
+        {
+            return Parameter(value, typeof(double));
+        }
+
+        return value is >= int.MinValue and <= int.MaxValue ? Parameter((int)value, typeof(int)) : Parameter((long)value, typeof(long));
+    }
+
     private Sql.Sql Function(string name, Expression argument) =>
         Sql.Sql.Empty.Append(name + "(").Append(Visit(argument)).Append(")");
 
@@ -716,6 +997,24 @@ internal sealed class ExpressionTranslator
 
     private static bool IsBoolean(Type type) => type == typeof(bool) || type == typeof(bool?);
 
+    private static bool IsText(Type type) => type == typeof(string) || type == typeof(char);
+
+    private static bool IsFractional(Type type)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        return type == typeof(double) || type == typeof(float) || type == typeof(decimal);
+    }
+
+    private static bool IsDateTime(Type type) => (Nullable.GetUnderlyingType(type) ?? type) == typeof(DateTime);
+
+    private static bool IsTimeSpan(Type type) => (Nullable.GetUnderlyingType(type) ?? type) == typeof(TimeSpan);
+
+    private static bool IsDateOrTime(Type type)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        return type == typeof(DateTime) || type == typeof(DateOnly) || type == typeof(TimeOnly) || type == typeof(DateTimeOffset) || type == typeof(TimeSpan);
+    }
+
     private static bool IsIntegral(Type type)
     {
         type = Nullable.GetUnderlyingType(type) ?? type;
@@ -747,6 +1046,10 @@ internal sealed class ExpressionTranslator
                 new NullabilityInfoContext().Create(property).ReadState != NullabilityState.NotNull,
             BinaryExpression { NodeType: ExpressionType.Add } add when add.Type == typeof(string) => false,
             BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce => CanBeNull(coalesce.Right),
+            ConditionalExpression conditional => CanBeNull(conditional.IfTrue) || CanBeNull(conditional.IfFalse),
+            // Concatenations and ToString() treat null as empty.
+            MethodCallExpression { Object: null, Method.Name: nameof(string.Concat) or nameof(string.Format) } call when call.Method.DeclaringType == typeof(string) => false,
+            MethodCallExpression { Method.Name: nameof(ToString), Arguments.Count: 0 } => false,
             MethodCallExpression { Object: { } target } call when call.Method.DeclaringType == typeof(string) => CanBeNull(target),
             _ => true,
         };
@@ -825,7 +1128,7 @@ internal sealed class ExpressionTranslator
     }
 
     private static NotSupportedException Unsupported(Expression node) =>
-      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, string StartsWith/EndsWith/Contains/ToUpper/ToLower/Trim/TrimStart/TrimEnd/Substring/Replace/Length/IsNullOrWhiteSpace, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second, Math.Abs/Floor/Ceiling, SqlFunctions.Like, collection Contains, subqueries (query.Any, projection.Contains) and, over groups, Count/Sum/Min/Max/Average. Use .Where($\"...\") for anything else.");
+      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, conditionals (?:), string StartsWith/EndsWith/Contains/IndexOf/ToUpper/ToLower/Trim/TrimStart/TrimEnd/PadLeft/PadRight/Substring/Replace/Length/IsNullOrWhiteSpace/Compare/Concat/Format, integer ToString, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second/Date and AddYears...AddSeconds, (date - date).TotalDays/TotalHours/TotalMinutes/TotalSeconds, Math.Abs/Floor/Ceiling/Sqrt/Pow/Min/Max, casts to integers, SqlFunctions.Like, collection Contains, subqueries (query.Any, projection.Contains) and, over groups, Count/Sum/Min/Max/Average. Use .Where($\"...\") for anything else.");
 
     /// <summary>An entity of an enclosing query, which a subquery refers to by <paramref name="Reference"/> (its alias or table).</summary>
     private sealed record Scope(ParameterExpression Parameter, EntityMap Map, string Reference);

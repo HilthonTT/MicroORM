@@ -18,6 +18,9 @@ internal sealed class PostgreSqlDialect : SqlDialect
     public override Sql.Sql DatePart(DatePart part, Sql.Sql value) =>
         Sql.Sql.Empty.Append("CAST(FLOOR(").Append(base.DatePart(part, value)).Append(") AS INTEGER)");
 
+    public override Sql.Sql Position(Sql.Sql value, Sql.Sql search) =>
+        Sql.Sql.Empty.Append("STRPOS(").Append(value).Append(", ").Append(search).Append(")");
+
     public override Sql.Sql Trim(Sql.Sql value, bool leading, bool trailing) => leading && trailing
         ? Sql.Sql.Empty.Append("BTRIM(").Append(value).Append(", ").AppendParameter(Whitespace, typeof(string)).Append(")")
         : base.Trim(value, leading, trailing);

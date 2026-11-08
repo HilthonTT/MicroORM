@@ -127,6 +127,57 @@ public abstract class SqlDialect
         return (length is null ? sql : sql.Append(", ").Append(length)).Append(")");
     }
 
+    /// <summary>Gets the 1-based position of <paramref name="search"/> in <paramref name="value"/>, or 0 when it isn't found.</summary>
+    public virtual SQL Position(SQL value, SQL search) =>
+        SQL.Empty.Append("INSTR(").Append(value).Append(", ").Append(search).Append(")");
+
+    /// <summary>
+    /// Pads a string to <paramref name="width"/> characters with <paramref name="padding"/> (one
+    /// character), on the left or the right. Like C#, a string already that long is left as is.
+    /// </summary>
+    public virtual SQL Pad(SQL value, SQL width, SQL padding, bool left) =>
+        SQL.Empty.Append("CASE WHEN ").Append(Length(value)).Append(" >= ").Append(width).Append(" THEN ").Append(value)
+            .Append(left ? " ELSE LPAD(" : " ELSE RPAD(").Append(value).Append(", ").Append(width).Append(", ").Append(padding).Append(") END");
+
+    /// <summary>Gets the type an integer is cast to for <c>ToString()</c>.</summary>
+    public virtual string TextType => "TEXT";
+
+    /// <summary>Converts a number to an integer, truncating toward zero as a C# cast does.</summary>
+    public virtual SQL ToInteger(SQL value) =>
+        SQL.Empty.Append("CAST(TRUNC(").Append(value).Append(") AS BIGINT)");
+
+    /// <summary>
+    /// Adds <paramref name="amount"/> units to a date or time, clamping to the end of the month
+    /// for months and years as C# does.
+    /// </summary>
+    /// <param name="unit">The unit of <paramref name="amount"/>.</param>
+    /// <param name="value">The date or time.</param>
+    /// <param name="amount">The number of units, possibly negative.</param>
+    /// <param name="wholeAmount">Whether <paramref name="amount"/> is known to be a whole number.</param>
+    /// <param name="dateOnly">Whether <paramref name="value"/> is a date without a time (<see cref="DateOnly"/>).</param>
+    public virtual SQL DateAdd(DatePart unit, SQL value, SQL amount, bool wholeAmount, bool dateOnly)
+    {
+        var interval = unit switch
+        {
+            Dialects.DatePart.Year => "1 year",
+            Dialects.DatePart.Month => "1 month",
+            Dialects.DatePart.Day => "1 day",
+            Dialects.DatePart.Hour => "1 hour",
+            Dialects.DatePart.Minute => "1 minute",
+            Dialects.DatePart.Second => "1 second",
+            _ => throw new ArgumentOutOfRangeException(nameof(unit)),
+        };
+        var sql = SQL.Empty.Append("(").Append(value).Append(" + (").Append(amount).Append(") * INTERVAL '" + interval + "')");
+        return dateOnly ? SQL.Empty.Append("CAST(").Append(sql).Append(" AS DATE)") : sql;
+    }
+
+    /// <summary>Gets the start of the day (midnight) of a date and time, as C#'s <see cref="DateTime.Date"/>.</summary>
+    public virtual SQL StartOfDay(SQL value) => SQL.Empty.Append("DATE_TRUNC('day', ").Append(value).Append(")");
+
+    /// <summary>Gets the seconds from <paramref name="earlier"/> to <paramref name="later"/>, with any fraction, as a number.</summary>
+    public virtual SQL SecondsBetween(SQL earlier, SQL later) =>
+        SQL.Empty.Append("EXTRACT(EPOCH FROM (").Append(later).Append(" - ").Append(earlier).Append("))");
+
     /// <summary>Appends a paging clause to a <c>SELECT</c> statement.</summary>
     /// <param name="sql">The statement to append to.</param>
     /// <param name="skip">Rows to skip, if any.</param>

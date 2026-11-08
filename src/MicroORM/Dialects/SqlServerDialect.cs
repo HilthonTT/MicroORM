@@ -45,6 +45,41 @@ internal sealed class SqlServerDialect : SqlDialect
         Sql.Sql.Empty.Append("SUBSTRING(").Append(value).Append(", ").Append(start).Append(", ")
             .Append(length ?? Sql.Sql.Empty.Append("DATALENGTH(").Append(value).Append(")")).Append(")");
 
+    public override string TextType => "NVARCHAR(MAX)";
+
+    // CAST truncates toward zero on SQL Server.
+    public override Sql.Sql ToInteger(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(").Append(value).Append(" AS BIGINT)");
+
+    public override Sql.Sql Position(Sql.Sql value, Sql.Sql search) =>
+        Sql.Sql.Empty.Append("CHARINDEX(").Append(search).Append(", ").Append(value).Append(")");
+
+    public override Sql.Sql Pad(Sql.Sql value, Sql.Sql width, Sql.Sql padding, bool left)
+    {
+        var fill = Sql.Sql.Empty.Append("REPLICATE(").Append(padding).Append(", ").Append(width).Append(")");
+        var padded = left
+            ? Sql.Sql.Empty.Append("RIGHT(").Append(fill).Append(" + ").Append(value).Append(", ").Append(width).Append(")")
+            : Sql.Sql.Empty.Append("LEFT(").Append(value).Append(" + ").Append(fill).Append(", ").Append(width).Append(")");
+        return Sql.Sql.Empty.Append("CASE WHEN ").Append(Length(value)).Append(" >= ").Append(width).Append(" THEN ").Append(value)
+            .Append(" ELSE ").Append(padded).Append(" END");
+    }
+
+    // DATEADD truncates a fractional amount; it clamps month ends as C# does.
+    public override Sql.Sql DateAdd(DatePart unit, Sql.Sql value, Sql.Sql amount, bool wholeAmount, bool dateOnly)
+    {
+        if (!wholeAmount)
+        {
+            throw new NotSupportedException($"SQL Server adds whole {unit.ToString().ToLowerInvariant()}s only; pass a whole number, or a smaller unit such as AddMinutes.");
+        }
+
+        return Sql.Sql.Empty.Append("DATEADD(" + unit.ToString().ToLowerInvariant() + ", ").Append(amount).Append(", ").Append(value).Append(")");
+    }
+
+    public override Sql.Sql StartOfDay(Sql.Sql value) =>
+        Sql.Sql.Empty.Append("CAST(CAST(").Append(value).Append(" AS DATE) AS DATETIME2)");
+
+    public override Sql.Sql SecondsBetween(Sql.Sql earlier, Sql.Sql later) =>
+        Sql.Sql.Empty.Append("(CAST(DATEDIFF_BIG(microsecond, ").Append(earlier).Append(", ").Append(later).Append(") AS FLOAT) / 1000000)");
+
     public override void ConfigureParameter(DbParameter parameter, SqlParameterValue value)
     {
         ArgumentNullException.ThrowIfNull(parameter);

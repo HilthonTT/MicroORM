@@ -64,17 +64,30 @@ subset, use `Where($"...")`.
 | `x == null`, `x != null` | `IS NULL`, `IS NOT NULL` |
 | `x.HasValue`, `x.Value` | `IS NOT NULL`, the column |
 | `a ?? b` | `COALESCE(a, b)` |
+| `test ? a : b` | `CASE WHEN test THEN a ELSE b END` |
+| `(int)x`, `(long)x` on a `double` or `decimal` | truncates toward zero, as C# does (`TRUNC`, `TRUNCATE` or `CAST`) |
 | `c.Active` (a `bool` column on its own) | `active = TRUE` (as a parameter) |
 | `s.StartsWith(v)`, `s.EndsWith(v)`, `s.Contains(v)` | `LIKE` with `%`, `_`, `[` and `!` escaped |
 | `s.ToUpper()`, `s.ToLower()`, `s.Trim()`, `s.TrimStart()`, `s.TrimEnd()` | `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM` |
 | `s.Length` | `LENGTH`, `LEN` or `CHAR_LENGTH` |
 | `s.Substring(i)`, `s.Substring(i, n)` | `SUBSTR(s, i + 1, n)` (`SUBSTRING` in SQL Server) |
 | `s.Replace(a, b)` | `REPLACE(s, a, b)` |
+| `s.IndexOf(v)` | zero-based position, `-1` when not found (`INSTR`, `STRPOS`, `CHARINDEX`) |
+| `s.PadLeft(n)`, `s.PadRight(n, c)` | `LPAD`/`RPAD` (or the dialect's equivalent); never truncates a longer string |
+| `string.Compare(a, b)`, `a.CompareTo(b)` | `-1`, `0` or `1` in the database's collation, `NULL` first |
+| `string.Concat(...)`, `$"{c.First} {c.Last}"` | concatenation, with `null` as an empty string |
+| `n.ToString()` on an integer | `CAST(n AS ...)` |
 | `string.IsNullOrEmpty(s)` | `(s IS NULL OR s = '')` |
 | `string.IsNullOrWhiteSpace(s)` | `(s IS NULL OR TRIM(s) = '')` |
 | `SqlFunctions.Like(s, pattern)` | `s LIKE pattern`, with `%` and `_` as wildcards (not escaped) |
 | `d.Year`, `Month`, `Day`, `Hour`, `Minute`, `Second` on `DateTime` (and the date parts of `DateOnly`) | `EXTRACT`, `DATEPART` or `strftime` |
-| `Math.Abs(x)`, `Math.Floor(x)`, `Math.Ceiling(x)` | `ABS`, `FLOOR`, `CEILING` |
+| `d.AddYears(n)` ... `d.AddSeconds(n)` on `DateTime` (`AddYears`, `AddMonths`, `AddDays` on `DateOnly`) | `INTERVAL`, `DATEADD`, `DATE_ADD` or `strftime` modifiers; month ends clamp as in C# |
+| `d + timeSpan`, `d - timeSpan` (a `TimeSpan` value) | adds or subtracts its seconds |
+| `d.Date` | midnight of the same day |
+| `(a - b).TotalDays`, `TotalHours`, `TotalMinutes`, `TotalSeconds` on two `DateTime`s | the difference, with any fraction |
+| `Math.Abs(x)`, `Math.Floor(x)`, `Math.Ceiling(x)`, `Math.Sqrt(x)` | `ABS`, `FLOOR`, `CEILING`, `SQRT` |
+| `Math.Pow(x, y)` | `POWER(CAST(x AS <float>), y)` |
+| `Math.Min(a, b)`, `Math.Max(a, b)` | `CASE WHEN a <= b THEN a ELSE b END` (and `>=`) |
 | `list.Contains(c.X)`, `array.Contains(c.X)` | `X IN (@p0, @p1, ...)` |
 | `query.Any(o => ...)`, `query.Any()` on another typed query | `EXISTS (SELECT 1 FROM ...)`; see [Subqueries](#subqueries) |
 | `projection.Contains(c.X)` on a one-value projection | `EXISTS (...)` matching the value |
@@ -97,6 +110,16 @@ Notes:
   `DateTimeOffset` members, because databases disagree on which offset the parts are in.
 - `Math.Round` isn't translated: databases round halves differently from .NET, and from each other.
   Use `Where($"ROUND(price, 2) = {value}")` and pick the behaviour you want.
+- SQL Server and MySQL add whole units only, so a fractional amount (`AddDays(1.5)`, or
+  `AddHours(x.Minutes / 60.0)`) throws there. Use a smaller unit. On PostgreSQL, adding days to a
+  `timestamptz` follows the session's time zone, so a day across a daylight-saving change isn't 24 hours.
+- In SQLite, dates are text in Microsoft.Data.Sqlite's format (`yyyy-MM-dd HH:mm:ss.FFFFFFF`). Date
+  arithmetic keeps that format, to the millisecond.
+- `IndexOf`, `Compare` and `CompareTo` follow the database's collation, like `=`: case-insensitive by
+  default in SQL Server and MySQL.
+- A concatenation or interpolated string can only contain strings and integers. Other values, and
+  placeholders with a format or alignment (`{x.Price:N2}`), throw, because SQL formats them
+  differently from .NET.
 - Sorting by an expression works too: `OrderBy(u => u.Name.ToLower())`.
 
 ## Raw conditions

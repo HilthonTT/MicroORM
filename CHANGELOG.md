@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format follows
 - Typed queries translate more expressions: `DateTime` and `DateOnly` `Year`/`Month`/`Day` (and `Hour`/`Minute`/`Second` for `DateTime`), `Math.Abs`/`Floor`/`Ceiling`, string `Substring`, `Replace`, `TrimStart`, `TrimEnd` and `string.IsNullOrWhiteSpace`.
 - `SqlFunctions.Like(value, pattern)` for `LIKE` patterns with your own wildcards.
 - `SqlDialect.DatePart` and `SqlDialect.Substring` for dialects to override.
+- Typed queries translate more expressions: conditionals (`a ? b : c`), `DateTime` and `DateOnly` `AddYears` through `AddSeconds`, `DateTime.Date`, `date ± TimeSpan` values, `(a - b).TotalDays`/`TotalHours`/`TotalMinutes`/`TotalSeconds`, string `IndexOf`, `PadLeft`, `PadRight`, `string.Compare`, `CompareTo`, `string.Concat`, interpolated strings (`string.Format` without format specifiers), integer `ToString()`, `Math.Sqrt`, `Math.Pow`, `Math.Min` and `Math.Max`.
+- `SqlDialect.Position`, `Pad`, `TextType`, `ToInteger`, `DateAdd`, `StartOfDay` and `SecondsBetween` for dialects to override.
 
 ### Changed
 
@@ -39,6 +41,8 @@ All notable changes to this project are documented here. The format follows
 - Closed `array.Contains(value)` expressions no longer throw under C# 14 first-class spans.
 - `list.Contains(x.Column)` matches `NULL` when the list contains `null`, as in C#.
 - The bitwise complement `~x` is rejected instead of being translated as a logical `NOT`.
+- A cast from a `double` or `decimal` to an integer (`(int)x.Price`) truncates toward zero, as in C#. It used to be dropped, so the value kept its fraction.
+- `date + timeSpan` and `date - date` are translated or rejected. They used to become a plain `+` or `-` of the values, which databases reject or compute differently.
 - The string `"0"` converts to `false`.
 - `Skip` and `Take` compose in call order, as in LINQ: `Take(10).Skip(5)` returns 5 rows (not 10), `Skip(2).Skip(3)` skips 5 and `Take(5).Take(10)` returns 5.
 - A failed `Commit` is no longer hidden by a second exception from the rollback on dispose.

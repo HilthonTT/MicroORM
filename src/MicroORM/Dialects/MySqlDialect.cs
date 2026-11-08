@@ -30,6 +30,27 @@ internal sealed class MySqlDialect : SqlDialect
         Sql.Sql.Empty.Append("REGEXP_REPLACE(").Append(value)
             .Append(leading && trailing ? ", '^[[:space:]]+|[[:space:]]+$', '')" : leading ? ", '^[[:space:]]+', '')" : ", '[[:space:]]+$', '')");
 
+    public override string TextType => "CHAR";
+
+    // CAST rounds on MySQL; TRUNCATE truncates toward zero, as C# does.
+    public override Sql.Sql ToInteger(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(TRUNCATE(").Append(value).Append(", 0) AS SIGNED)");
+
+    // INTERVAL rounds a fractional amount; it clamps month ends as C# does.
+    public override Sql.Sql DateAdd(DatePart unit, Sql.Sql value, Sql.Sql amount, bool wholeAmount, bool dateOnly)
+    {
+        if (!wholeAmount)
+        {
+            throw new NotSupportedException($"MySQL adds whole {unit.ToString().ToLowerInvariant()}s only; pass a whole number, or a smaller unit such as AddMinutes.");
+        }
+
+        return Sql.Sql.Empty.Append("DATE_ADD(").Append(value).Append(", INTERVAL ").Append(amount).Append(" " + unit.ToString().ToUpperInvariant() + ")");
+    }
+
+    public override Sql.Sql StartOfDay(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(DATE(").Append(value).Append(") AS DATETIME(6))");
+
+    public override Sql.Sql SecondsBetween(Sql.Sql earlier, Sql.Sql later) =>
+        Sql.Sql.Empty.Append("(TIMESTAMPDIFF(MICROSECOND, ").Append(earlier).Append(", ").Append(later).Append(") / 1000000)");
+
     public override string EmptyList(string parameter) => "(SELECT " + parameter + " FROM DUAL WHERE 1 = 0)";
 
     public override void AppendPaging(Sql.Sql sql, int? skip, int? take, bool hasOrderBy)

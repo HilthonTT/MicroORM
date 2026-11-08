@@ -5,7 +5,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <!-- Test names use underscores; string-overload calls are deliberate inputs to the translator. -->
-    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1865;CA1866;CA1847;CA1304;CA1311;CA1862</NoWarn>
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1865;CA1866;CA1847;CA1304;CA1311;CA1862;CA1309;CA1310;CA1858;CA1305;CA2249</NoWarn>
     <!-- Not a library: public members need no XML documentation. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>

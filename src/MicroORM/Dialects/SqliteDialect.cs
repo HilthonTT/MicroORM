@@ -49,6 +49,50 @@ internal sealed class SqliteDialect : SqlDialect
         return Sql.Sql.Empty.Append("CAST(strftime('" + format + "', ").Append(value).Append(") AS INTEGER)");
     }
 
+    public override Sql.Sql ToInteger(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(").Append(value).Append(" AS INTEGER)");
+
+    // SQLite has no LPAD; hex(zeroblob(n)) is n "00" pairs, each replaced with the padding.
+    public override Sql.Sql Pad(Sql.Sql value, Sql.Sql width, Sql.Sql padding, bool left)
+    {
+        var fill = Sql.Sql.Empty.Append("REPLACE(HEX(ZEROBLOB(").Append(width).Append(")), '00', ").Append(padding).Append(")");
+        var padded = left
+            ? Sql.Sql.Empty.Append("SUBSTR(").Append(fill).Append(" || ").Append(value).Append(", -").Append(width).Append(")")
+            : Sql.Sql.Empty.Append("SUBSTR(").Append(value).Append(" || ").Append(fill).Append(", 1, ").Append(width).Append(")");
+        return Sql.Sql.Empty.Append("CASE WHEN ").Append(Length(value)).Append(" >= ").Append(width).Append(" THEN ").Append(value)
+            .Append(" ELSE ").Append(padded).Append(" END");
+    }
+
+    // Microsoft.Data.Sqlite stores a DateTime as "yyyy-MM-dd HH:mm:ss.FFFFFFF" and a DateOnly as
+    // "yyyy-MM-dd"; results keep that format so they compare with stored values and parameters.
+    // "floor" clamps Jan 31 + 1 month to Feb 28, as C# does, instead of rolling over to March.
+    public override Sql.Sql DateAdd(DatePart unit, Sql.Sql value, Sql.Sql amount, bool wholeAmount, bool dateOnly)
+    {
+        var name = unit switch
+        {
+            Dialects.DatePart.Year => " years",
+            Dialects.DatePart.Month => " months",
+            Dialects.DatePart.Day => " days",
+            Dialects.DatePart.Hour => " hours",
+            Dialects.DatePart.Minute => " minutes",
+            Dialects.DatePart.Second => " seconds",
+            _ => throw new ArgumentOutOfRangeException(nameof(unit)),
+        };
+        var modifier = Sql.Sql.Empty.Append("CAST(").Append(amount).Append(" AS TEXT) || '" + name + "'");
+        if (unit is Dialects.DatePart.Year or Dialects.DatePart.Month)
+        {
+            modifier.Append(", 'floor'");
+        }
+
+        return dateOnly
+            ? Sql.Sql.Empty.Append("DATE(").Append(value).Append(", ").Append(modifier).Append(")")
+            : DateTimeText(Sql.Sql.Empty.Append(value).Append(", ").Append(modifier));
+    }
+
+    public override Sql.Sql StartOfDay(Sql.Sql value) => DateTimeText(Sql.Sql.Empty.Append(value).Append(", 'start of day'"));
+
+    public override Sql.Sql SecondsBetween(Sql.Sql earlier, Sql.Sql later) =>
+        Sql.Sql.Empty.Append("(UNIXEPOCH(").Append(later).Append(", 'subsec') - UNIXEPOCH(").Append(earlier).Append(", 'subsec'))");
+
     public override void AppendPaging(Sql.Sql sql, int? skip, int? take, bool hasOrderBy)
     {
         if (skip is not null && take is null)
@@ -58,4 +102,8 @@ internal sealed class SqliteDialect : SqlDialect
 
         base.AppendPaging(sql, skip, take, hasOrderBy);
     }
+
+    /// <summary>Formats a date and time like Microsoft.Data.Sqlite: fractional seconds only when there are any.</summary>
+    private static Sql.Sql DateTimeText(Sql.Sql arguments) =>
+        Sql.Sql.Empty.Append("RTRIM(RTRIM(STRFTIME('%Y-%m-%d %H:%M:%f', ").Append(arguments).Append("), '0'), '.')");
 }
