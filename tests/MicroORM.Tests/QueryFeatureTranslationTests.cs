@@ -76,6 +76,17 @@ public class QueryFeatureTranslationTests
     }
 
     [Fact]
+    public void Group_filters_and_ordering_cannot_follow_paging()
+    {
+        // They would apply before the page rather than to it, as LINQ does.
+        var page = Orders.GroupBy(o => o.PersonId).OrderBy(g => g.Key).Take(3);
+        Assert.Throws<NotSupportedException>(() => page.Having(g => g.Count() > 1));
+        Assert.Throws<NotSupportedException>(() => page.OrderBy(g => g.Count()));
+        Assert.Throws<NotSupportedException>(() => page.ThenBy(g => g.Count()));
+        Assert.Throws<NotSupportedException>(() => Orders.GroupBy(o => o.PersonId).Skip(1).OrderByDescending(g => g.Key));
+    }
+
+    [Fact]
     public void Composite_keys_select_members_and_order_by_every_part()
     {
         Assert.Equal(

@@ -169,6 +169,13 @@ public class Query<T> : IProjectionSource, ISubquerySource
             throw new NotSupportedException($"{Dialect} has no row locks; a write transaction locks the whole database instead.");
         }
 
+        // The rows of a derived table aren't the table's: SQL Server would read them without the
+        // lock, and PostgreSQL and MySQL reject FOR UPDATE with DISTINCT or a set operation.
+        if (_state.Source is not null)
+        {
+            throw new NotSupportedException("ForUpdate cannot follow Distinct, Union, Concat, Intersect or Except; lock the table's rows instead.");
+        }
+
         return With(_state with { ForUpdate = true });
     }
 

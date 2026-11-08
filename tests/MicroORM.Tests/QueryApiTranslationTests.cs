@@ -313,6 +313,10 @@ public class QueryApiTranslationTests
         Assert.Throws<NotSupportedException>(() => locked.Union(People(dialect)));
         Assert.Throws<NotSupportedException>(() => locked.Select(p => p.Name).Distinct().ToSql());
         Assert.Throws<NotSupportedException>(() => People(dialect).Where(p => locked.Any(q => q.Id == p.Id)));
+
+        // A derived table's rows can't be locked either (SQL Server would drop the hint).
+        Assert.Throws<NotSupportedException>(() => People(dialect).Distinct().ForUpdate());
+        Assert.Throws<NotSupportedException>(() => People(dialect).Union(People(dialect)).ForUpdate());
     }
 
     [Fact]

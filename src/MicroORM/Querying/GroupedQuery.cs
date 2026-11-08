@@ -75,6 +75,7 @@ public sealed class GroupedQuery<TKey, T> : IProjectionSource
     public GroupedQuery<TKey, T> Having(Expression<Func<IGrouping<TKey, T>, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
+        ThrowIfPaged("Having");
         return new(this, [.. _having, ExpressionTranslator.Predicate(predicate, _source.Map, Dialect, _key)], _ordering, _skip, _take);
     }
 
@@ -162,6 +163,18 @@ public sealed class GroupedQuery<TKey, T> : IProjectionSource
 
     private static string KeyAlias(int index) => "group_key" + index.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// Filtering or ordering a page of groups would have to apply after the paging, as in LINQ, but
+    /// this query pages last. Throws rather than silently filtering or ordering before the page.
+    /// </summary>
+    private void ThrowIfPaged(string operation)
+    {
+        if (IsPaged)
+        {
+            throw new NotSupportedException($"{operation} cannot follow Skip or Take; call it before them.");
+        }
+    }
+
     private int Limit(int count) => _take is int take ? Math.Min(take, count) : count;
 
     private Sql.Sql From()
@@ -187,6 +200,7 @@ public sealed class GroupedQuery<TKey, T> : IProjectionSource
     private GroupedQuery<TKey, T> Order<TOrder>(Expression<Func<IGrouping<TKey, T>, TOrder>> key, bool descending, bool replace)
     {
         ArgumentNullException.ThrowIfNull(key);
+        ThrowIfPaged(replace ? "OrderBy" : "ThenBy");
 
         // Ordering by a whole composite key orders by each of its parts.
         IEnumerable<Sql.Sql> expressions = key.Body is MemberExpression { Member.Name: "Key" } member && member.Expression == key.Parameters[0] && _key.IsComposite

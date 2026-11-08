@@ -65,6 +65,8 @@ All notable changes to this project are documented here. The format follows
 - `Stream`, `StreamAsync` and `QueryMultiple` log a command that fails while reading with its error, instead of as a success.
 - Disposing a transaction whose work failed no longer replaces that exception with one from the rollback.
 - `ProcedureParameters.Get("@name")` finds a parameter added as `"@name"`, and outputs of a type with a registered type handler are read through it.
+- `Having`, `OrderBy` and `ThenBy` on a grouped query throw after `Skip` or `Take`, as they do on a typed query. They used to filter or order the groups before the page instead of the page itself.
+- `ForUpdate` throws after `Distinct` or a set operation. On SQL Server the rows used to be read without the lock; PostgreSQL and MySQL rejected the statement.
 
 ## [0.1.0] - 2026-10-16
 
