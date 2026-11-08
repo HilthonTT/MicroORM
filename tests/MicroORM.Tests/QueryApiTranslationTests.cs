@@ -205,6 +205,31 @@ public class QueryApiTranslationTests
             Select(SqlDialect.Sqlite, p => Math.Max(p.Age, 30) + Math.Min(p.Age, 10)));
     }
 
+    // ---- Terminal operators --------------------------------------------------------------------
+
+    [Fact]
+    public void All_looks_for_a_row_that_fails()
+    {
+        var people = People(SqlDialect.Sqlite);
+        var orders = Db(SqlDialect.Sqlite).Table<Order>();
+        Assert.Equal(
+            "NOT EXISTS (SELECT 1 FROM \"micro_orders\" AS \"s0\" WHERE NOT (((\"s0\".\"person_id\" <> \"micro_people\".\"id\" OR \"s0\".\"person_id\" IS NULL) OR (\"s0\".\"amount\" > @p0))))",
+            Where(SqlDialect.Sqlite, p => orders.All(o => o.PersonId != p.Id || o.Amount > 10)));
+
+        // The unknown of a NULL counts as failing, as false does in C#.
+        Assert.Equal(
+            "NOT EXISTS (SELECT 1 FROM \"micro_orders\" AS \"s0\" WHERE (CASE WHEN (\"s0\".\"person_id\" > @p0) THEN 0 ELSE 1 END = 1))",
+            Where(SqlDialect.Sqlite, p => orders.All(o => o.PersonId > 0)));
+    }
+
+    [Fact]
+    public void Last_reverses_the_order_and_needs_one()
+    {
+        var people = People(SqlDialect.SqlServer);
+        Assert.Throws<NotSupportedException>(() => people.Last());
+        Assert.Throws<NotSupportedException>(() => people.Where(p => p.Active).LastOrDefault());
+    }
+
     private static DbConnection NoConnection() => throw new InvalidOperationException("No database in translation tests.");
 
     [Table("holidays")]

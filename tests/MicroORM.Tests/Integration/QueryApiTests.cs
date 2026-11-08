@@ -11,6 +11,92 @@ public class QueryApiTests
 {
     private static async Task<string[]> NamesAsync(Query<Person> query) => [.. (await query.OrderBy(p => p.Name).ToListAsync()).Select(p => p.Name)];
 
+    // ---- Terminal operators --------------------------------------------------------------------
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task First_single_last_and_element_at(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        var people = database.Db.Table<Person>();
+        var byAge = people.OrderBy(p => p.Age);
+        var nobody = people.Where(p => p.Age > 100);
+
+        Assert.Equal("Brendan", (await byAge.FirstAsync()).Name);
+        Assert.Equal("Dmitri", byAge.First(p => p.Mood == Mood.Happy).Name);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => nobody.FirstAsync());
+
+        Assert.Equal("Cleo", (await people.SingleOrDefaultAsync(p => p.Name == "Cleo"))!.Name);
+        Assert.Null(await nobody.SingleOrDefaultAsync());
+        Assert.Null(people.SingleOrDefault(p => p.Age > 100));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => people.SingleOrDefaultAsync(p => p.Active));
+        Assert.Equal("Ada", (await people.SingleAsync(p => p.Email == "ada@example.com")).Name);
+
+        // Last reverses the order; on a page, it is the page's last row (ages 17, 29, 36).
+        Assert.Equal("Cleo", (await byAge.LastAsync()).Name);
+        Assert.Equal("Ada", (await byAge.Take(3).LastOrDefaultAsync())!.Name);
+        Assert.Equal("Dmitri", byAge.Skip(1).Take(1).Last().Name);
+        Assert.Null(await nobody.OrderBy(p => p.Age).LastOrDefaultAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => nobody.OrderBy(p => p.Age).LastAsync());
+        Assert.Throws<NotSupportedException>(() => people.LastOrDefault());
+
+        Assert.Equal("Dmitri", (await byAge.ElementAtAsync(1)).Name);
+        Assert.Null(await byAge.ElementAtOrDefaultAsync(5));
+        Assert.Throws<ArgumentOutOfRangeException>(() => byAge.ElementAt(5));
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task All_count_and_dictionaries(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        await OrdersAsync(database);
+        var people = database.Db.Table<Person>();
+        var orders = database.Db.Table<Order>();
+
+        Assert.True(await people.AllAsync(p => p.Age > 10));
+        Assert.False(people.All(p => p.Age > 20));
+        Assert.True(await people.Where(p => p.Age > 100).AllAsync(p => p.Age < 0));
+        Assert.True(await people.OrderBy(p => p.Age).Take(2).AllAsync(p => p.Age < 30));
+
+        // One order has no person; null > 0 is false in C#, so not every order matches.
+        Assert.False(await orders.AllAsync(o => o.PersonId > 0));
+        Assert.True(await orders.Where(o => o.PersonId != null).AllAsync(o => o.PersonId > 0));
+
+        // Correlated: people without an order under 10 (Brendan and Eve have none at all).
+        Assert.Equal(
+            ["50% Eve_", "Ada", "Brendan", "Cleo"],
+            await NamesAsync(people.Where(p => orders.All(o => o.PersonId != p.Id || o.Amount >= 10))));
+        Assert.Equal(["Dmitri"], await NamesAsync(people.Where(p => !orders.All(o => o.PersonId != p.Id || o.Amount >= 10))));
+
+        Assert.Equal(4, await people.CountAsync(p => p.Active));
+        Assert.Equal(2, people.Count(p => p.Mood == Mood.Happy));
+
+        var byName = await people.ToDictionaryAsync(p => p.Name);
+        Assert.Equal(52, byName["Cleo"].Age);
+        Assert.Equal(17, people.ToDictionary(p => p.Name, p => p.Age)["Brendan"]);
+        await Assert.ThrowsAsync<ArgumentException>(() => people.ToDictionaryAsync(p => p.Active));
+        Assert.Equal(36, (await people.Select(p => new { p.Name, p.Age }).ToDictionaryAsync(p => p.Name, p => p.Age))["Ada"]);
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Projection_terminal_operators(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        var people = database.Db.Table<Person>();
+        var names = people.OrderBy(p => p.Age).Select(p => p.Name);
+
+        Assert.Equal("Brendan", await names.FirstAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => people.Where(p => p.Age > 100).Select(p => p.Name).FirstAsync());
+        Assert.Equal(36, await people.Where(p => p.Name == "Ada").Select(p => p.Age).SingleOrDefaultAsync());
+        Assert.Equal(0, people.Where(p => p.Age > 100).Select(p => p.Age).SingleOrDefault());
+        Assert.Throws<InvalidOperationException>(() => names.SingleOrDefault());
+        Assert.True(await names.AnyAsync());
+        Assert.False(people.Where(p => p.Age > 100).Select(p => p.Name).Any());
+        Assert.Equal("Cleo", names.ToDictionary(n => n.Length == 4 ? "four" : n)["four"]);
+    }
+
     // ---- Translation ---------------------------------------------------------------------------
 
     [Theory]

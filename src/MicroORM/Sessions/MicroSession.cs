@@ -326,7 +326,12 @@ public abstract partial class MicroSession
         task.GetAwaiter().GetResult();
     }
 
-    internal static T? First<T>(List<T> rows) => rows.Count > 0 ? rows[0] : default;
+    internal static T? First<T>(List<T> rows, bool orDefault = true) => rows.Count switch
+    {
+        > 0 => rows[0],
+        _ when orDefault => default,
+        _ => throw new InvalidOperationException("The query returned no rows; at least one was expected."),
+    };
 
     internal static T? Single<T>(List<T> rows, bool orDefault) => rows.Count switch
     {

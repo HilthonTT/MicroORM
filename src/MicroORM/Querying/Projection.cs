@@ -51,6 +51,48 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
     /// <summary>Runs the query and yields projected rows as they are read.</summary>
     public IEnumerable<TResult> Stream() => Session.Stream<TResult>(ToSql());
 
+    /// <summary>Runs the query and returns the projected rows by a key computed in .NET; throws when two rows share a key.</summary>
+    public async Task<Dictionary<TKey, TResult>> ToDictionaryAsync<TKey>(Func<TResult, TKey> keySelector, CancellationToken cancellationToken = default)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        return (await ToListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector);
+    }
+
+    /// <summary>Runs the query and returns a value per projected row by a key, both computed in .NET; throws when two rows share a key.</summary>
+    public async Task<Dictionary<TKey, TValue>> ToDictionaryAsync<TKey, TValue>(Func<TResult, TKey> keySelector, Func<TResult, TValue> valueSelector, CancellationToken cancellationToken = default)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(valueSelector);
+        return (await ToListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, valueSelector);
+    }
+
+    /// <summary>Runs the query and returns the projected rows by a key computed in .NET; throws when two rows share a key.</summary>
+    public Dictionary<TKey, TResult> ToDictionary<TKey>(Func<TResult, TKey> keySelector)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        return ToList().ToDictionary(keySelector);
+    }
+
+    /// <summary>Runs the query and returns a value per projected row by a key, both computed in .NET; throws when two rows share a key.</summary>
+    public Dictionary<TKey, TValue> ToDictionary<TKey, TValue>(Func<TResult, TKey> keySelector, Func<TResult, TValue> valueSelector)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(valueSelector);
+        return ToList().ToDictionary(keySelector, valueSelector);
+    }
+
+    /// <summary>Returns the first projected row; throws when there are none.</summary>
+    public async Task<TResult> FirstAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.First(await Session.QueryCore<TResult>(true, Limited(1), 1, cancellationToken).ConfigureAwait(false), orDefault: false)!;
+
+    /// <summary>Returns the first projected row; throws when there are none.</summary>
+    public TResult First() =>
+        MicroSession.First(MicroSession.Sync(Session.QueryCore<TResult>(false, Limited(1), 1, default)), orDefault: false)!;
+
     /// <summary>Returns the first projected row, or default.</summary>
     public async Task<TResult?> FirstOrDefaultAsync(CancellationToken cancellationToken = default) =>
         MicroSession.First(await Session.QueryCore<TResult>(true, Limited(1), 1, cancellationToken).ConfigureAwait(false));
@@ -67,6 +109,21 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
     [SuppressMessage("Naming", "CA1720:Identifier contains type name", Justification = "Matches LINQ's Single.")]
     public TResult Single() =>
         MicroSession.Single(MicroSession.Sync(Session.QueryCore<TResult>(false, Limited(2), 2, default)), orDefault: false)!;
+
+    /// <summary>Returns the only projected row, or default when there are none; throws when there are several.</summary>
+    public async Task<TResult?> SingleOrDefaultAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.Single(await Session.QueryCore<TResult>(true, Limited(2), 2, cancellationToken).ConfigureAwait(false), orDefault: true);
+
+    /// <summary>Returns the only projected row, or default when there are none; throws when there are several.</summary>
+    public TResult? SingleOrDefault() =>
+        MicroSession.Single(MicroSession.Sync(Session.QueryCore<TResult>(false, Limited(2), 2, default)), orDefault: true);
+
+    /// <summary>Returns whether there are any projected rows.</summary>
+    public async Task<bool> AnyAsync(CancellationToken cancellationToken = default) =>
+        await Session.ScalarCore<bool>(true, AnySql(), cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Returns whether there are any projected rows.</summary>
+    public bool Any() => MicroSession.Sync(Session.ScalarCore<bool>(false, AnySql(), default));
 
     /// <summary>Counts the projected rows (the distinct ones after <see cref="Distinct"/>).</summary>
     public async Task<long> CountAsync(CancellationToken cancellationToken = default) =>
@@ -98,6 +155,8 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
 
     private Sql.Sql Derived(string alias) =>
         Sql.Sql.Empty.Append("(").Append(_source.SelectSql(_selectList, _distinct, null, ordered: false)).Append(") AS ").AppendIdentifier(alias);
+
+    private Sql.Sql AnySql() => Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (").Append(Limited(1)).Append(") THEN 1 ELSE 0 END");
 
     private Sql.Sql CountSql() => Sql.Sql.Empty.Append("SELECT COUNT(*) FROM ").Append(Derived("projected"));
 

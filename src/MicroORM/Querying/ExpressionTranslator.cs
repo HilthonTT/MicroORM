@@ -68,6 +68,10 @@ internal sealed class ExpressionTranslator
     public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>
         new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Condition(lambda.Body);
 
+    /// <summary>Translates a predicate whose columns are qualified with <paramref name="qualifier"/>, the alias of a <c>FROM</c> item.</summary>
+    public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect, string qualifier) =>
+        new ExpressionTranslator(map, lambda.Parameters[0], dialect, qualifier: qualifier).Condition(lambda.Body);
+
     /// <summary>Translates a value expression (<c>x =&gt; x.Name</c>) into a SQL expression.</summary>
     public static Sql.Sql Value(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>
         new ExpressionTranslator(map, lambda.Parameters[0], dialect, group).Projected(lambda.Body);
@@ -687,12 +691,12 @@ internal sealed class ExpressionTranslator
     internal static bool IsSubquery(MethodCallExpression node) =>
         node.Object is not null &&
         node.Method.DeclaringType is { IsGenericType: true } type &&
-        ((type.GetGenericTypeDefinition() == typeof(Query<>) && node.Method.Name == nameof(Query<object>.Any)) ||
+        ((type.GetGenericTypeDefinition() == typeof(Query<>) && node.Method.Name is nameof(Query<object>.Any) or nameof(Query<object>.All)) ||
          (type.GetGenericTypeDefinition() == typeof(Projection<,>) && node.Method.Name == nameof(Projection<object, object>.Contains)));
 
     /// <summary>
     /// Translates <c>query.Any(x =&gt; ...)</c> into <c>EXISTS (...)</c>, its predicate correlated to the
-    /// enclosing rows, and <c>projection.Contains(value)</c> into an <c>EXISTS</c> matching the value,
+    /// enclosing rows, <c>query.All(x =&gt; ...)</c> into <c>NOT EXISTS</c> of a row that fails it, and <c>projection.Contains(value)</c> into an <c>EXISTS</c> matching the value,
     /// <c>NULL</c> included as in C# (with <c>IN</c>, a <c>NULL</c> would make <c>NOT</c> match nothing).
     /// A filtered or paged source is a derived table, so its own filters and paging stay inside it.
     /// </summary>
@@ -710,7 +714,8 @@ internal sealed class ExpressionTranslator
 
         // One alias per nesting level: a subquery's own subqueries are one level deeper.
         var alias = "s" + _outer.Count.ToString(CultureInfo.InvariantCulture);
-        var exists = Sql.Sql.Empty.Append("EXISTS (SELECT 1 FROM ");
+        var all = node.Method.Name == nameof(Query<object>.All);
+        var exists = Sql.Sql.Empty.Append(all ? "NOT EXISTS (SELECT 1 FROM " : "EXISTS (SELECT 1 FROM ");
         switch (Evaluate(node.Object!))
         {
             case ISubquerySource query:
@@ -720,7 +725,9 @@ internal sealed class ExpressionTranslator
                 {
                     var predicate = (LambdaExpression)StripQuote(node.Arguments[0]);
                     var nested = new ExpressionTranslator(query.Map, predicate.Parameters[0], _dialect, qualifier: alias, outer: [new Scope(_entity, _map, Reference), .. _outer]);
-                    exists.Append(" WHERE ").Append(nested.Condition(predicate.Body));
+
+                    // All looks for a row where the predicate isn't true, unknown included, as in C#.
+                    exists.Append(" WHERE ").Append(nested.Condition(all ? Expression.Not(predicate.Body) : predicate.Body));
                 }
 
                 return exists.Append(")");
@@ -1128,7 +1135,7 @@ internal sealed class ExpressionTranslator
     }
 
     private static NotSupportedException Unsupported(Expression node) =>
-      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, conditionals (?:), string StartsWith/EndsWith/Contains/IndexOf/ToUpper/ToLower/Trim/TrimStart/TrimEnd/PadLeft/PadRight/Substring/Replace/Length/IsNullOrWhiteSpace/Compare/Concat/Format, integer ToString, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second/Date and AddYears...AddSeconds, (date - date).TotalDays/TotalHours/TotalMinutes/TotalSeconds, Math.Abs/Floor/Ceiling/Sqrt/Pow/Min/Max, casts to integers, SqlFunctions.Like, collection Contains, subqueries (query.Any, projection.Contains) and, over groups, Count/Sum/Min/Max/Average. Use .Where($\"...\") for anything else.");
+      new($"MicroORM cannot translate '{node}' to SQL. Supported: comparisons, &&, ||, !, arithmetic, null checks, conditionals (?:), string StartsWith/EndsWith/Contains/IndexOf/ToUpper/ToLower/Trim/TrimStart/TrimEnd/PadLeft/PadRight/Substring/Replace/Length/IsNullOrWhiteSpace/Compare/Concat/Format, integer ToString, DateTime and DateOnly Year/Month/Day/Hour/Minute/Second/Date and AddYears...AddSeconds, (date - date).TotalDays/TotalHours/TotalMinutes/TotalSeconds, Math.Abs/Floor/Ceiling/Sqrt/Pow/Min/Max, casts to integers, SqlFunctions.Like, collection Contains, subqueries (query.Any, query.All, projection.Contains) and, over groups, Count/Sum/Min/Max/Average. Use .Where($\"...\") for anything else.");
 
     /// <summary>An entity of an enclosing query, which a subquery refers to by <paramref name="Reference"/> (its alias or table).</summary>
     private sealed record Scope(ParameterExpression Parameter, EntityMap Map, string Reference);

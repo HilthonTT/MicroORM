@@ -15,6 +15,9 @@ namespace MicroORM.Querying;
 public class Query<T> : IProjectionSource, ISubquerySource
     where T : class
 {
+    /// <summary>The alias of the rows <see cref="AllAsync"/> checks, distinct from the <c>s0</c>, <c>s1</c>... of nested subqueries.</summary>
+    private const string CheckedRows = "checked_rows";
+
     private readonly IReadOnlyList<Sql.Sql> _filters;
     private readonly IReadOnlyList<(Sql.Sql Expression, bool Descending)> _ordering;
     private readonly int? _skip;
@@ -169,18 +172,66 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <summary>Runs the query and returns every row.</summary>
     public List<T> ToList() => MicroSession.Sync(Session.QueryCore<T>(false, ToSql(), null, default));
 
+    /// <summary>Runs the query and returns the rows by a key computed in .NET; throws when two rows share a key.</summary>
+    public async Task<Dictionary<TKey, T>> ToDictionaryAsync<TKey>(Func<T, TKey> keySelector, CancellationToken cancellationToken = default)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        return (await ToListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector);
+    }
+
+    /// <summary>Runs the query and returns a value per row by a key, both computed in .NET; throws when two rows share a key.</summary>
+    public async Task<Dictionary<TKey, TValue>> ToDictionaryAsync<TKey, TValue>(Func<T, TKey> keySelector, Func<T, TValue> valueSelector, CancellationToken cancellationToken = default)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(valueSelector);
+        return (await ToListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, valueSelector);
+    }
+
+    /// <summary>Runs the query and returns the rows by a key computed in .NET; throws when two rows share a key.</summary>
+    public Dictionary<TKey, T> ToDictionary<TKey>(Func<T, TKey> keySelector)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        return ToList().ToDictionary(keySelector);
+    }
+
+    /// <summary>Runs the query and returns a value per row by a key, both computed in .NET; throws when two rows share a key.</summary>
+    public Dictionary<TKey, TValue> ToDictionary<TKey, TValue>(Func<T, TKey> keySelector, Func<T, TValue> valueSelector)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(valueSelector);
+        return ToList().ToDictionary(keySelector, valueSelector);
+    }
+
     /// <summary>Runs the query and yields rows as they are read.</summary>
     public IAsyncEnumerable<T> StreamAsync(CancellationToken cancellationToken = default) => Session.StreamAsync<T>(ToSql(), cancellationToken);
 
     /// <summary>Runs the query and yields rows as they are read.</summary>
     public IEnumerable<T> Stream() => Session.Stream<T>(ToSql());
 
-    /// <summary>Returns the first row, or <see langword="null"/>.</summary>
-    public async Task<T?> FirstOrDefaultAsync(CancellationToken cancellationToken = default) =>
-        MicroSession.First(await Session.QueryCore<T>(true, Limit(1).ToSql(), 1, cancellationToken).ConfigureAwait(false));
+    /// <summary>Returns the first row; throws when there are none.</summary>
+    public async Task<T> FirstAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.First(await Session.QueryCore<T>(true, Limit(1).ToSql(), 1, cancellationToken).ConfigureAwait(false), orDefault: false)!;
+
+    /// <summary>Returns the first row; throws when there are none.</summary>
+    public T First() => MicroSession.First(MicroSession.Sync(Session.QueryCore<T>(false, Limit(1).ToSql(), 1, default)), orDefault: false)!;
+
+    /// <summary>Returns the first row matching <paramref name="predicate"/>; throws when there are none.</summary>
+    public Task<T> FirstAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        Where(predicate).FirstAsync(cancellationToken);
+
+    /// <summary>Returns the first row matching <paramref name="predicate"/>; throws when there are none.</summary>
+    public T First(Expression<Func<T, bool>> predicate) => Where(predicate).First();
 
     /// <summary>Returns the first row, or <see langword="null"/>.</summary>
-    public T? FirstOrDefault() => MicroSession.First(MicroSession.Sync(Session.QueryCore<T>(false, Limit(1).ToSql(), 1, default)));
+    public async Task<T?> FirstOrDefaultAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.First(await Session.QueryCore<T>(true, Limit(1).ToSql(), 1, cancellationToken).ConfigureAwait(false), orDefault: true);
+
+    /// <summary>Returns the first row, or <see langword="null"/>.</summary>
+    public T? FirstOrDefault() => MicroSession.First(MicroSession.Sync(Session.QueryCore<T>(false, Limit(1).ToSql(), 1, default)), orDefault: true);
 
     /// <summary>Returns the first row matching <paramref name="predicate"/>, or <see langword="null"/>.</summary>
     public Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
@@ -197,6 +248,72 @@ public class Query<T> : IProjectionSource, ISubquerySource
     [SuppressMessage("Naming", "CA1720:Identifier contains type name", Justification = "Matches LINQ's Single.")]
     public T Single() => MicroSession.Single(MicroSession.Sync(Session.QueryCore<T>(false, Limit(2).ToSql(), 2, default)), orDefault: false)!;
 
+    /// <summary>Returns the only row matching <paramref name="predicate"/>; throws when there are none or several.</summary>
+    public Task<T> SingleAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        Where(predicate).SingleAsync(cancellationToken);
+
+    /// <summary>Returns the only row matching <paramref name="predicate"/>; throws when there are none or several.</summary>
+    [SuppressMessage("Naming", "CA1720:Identifier contains type name", Justification = "Matches LINQ's Single.")]
+    public T Single(Expression<Func<T, bool>> predicate) => Where(predicate).Single();
+
+    /// <summary>Returns the only row, or <see langword="null"/> when there are none; throws when there are several.</summary>
+    public async Task<T?> SingleOrDefaultAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.Single(await Session.QueryCore<T>(true, Limit(2).ToSql(), 2, cancellationToken).ConfigureAwait(false), orDefault: true);
+
+    /// <summary>Returns the only row, or <see langword="null"/> when there are none; throws when there are several.</summary>
+    public T? SingleOrDefault() => MicroSession.Single(MicroSession.Sync(Session.QueryCore<T>(false, Limit(2).ToSql(), 2, default)), orDefault: true);
+
+    /// <summary>Returns the only row matching <paramref name="predicate"/>, or <see langword="null"/>; throws when several match.</summary>
+    public Task<T?> SingleOrDefaultAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        Where(predicate).SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>Returns the only row matching <paramref name="predicate"/>, or <see langword="null"/>; throws when several match.</summary>
+    public T? SingleOrDefault(Expression<Func<T, bool>> predicate) => Where(predicate).SingleOrDefault();
+
+    /// <summary>
+    /// Returns the last row in the query's order; throws when there are none. The query must be
+    /// ordered: it reads the first row of the reversed order.
+    /// </summary>
+    public async Task<T> LastAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.First(await Session.QueryCore<T>(true, LastSql(), 1, cancellationToken).ConfigureAwait(false), orDefault: false)!;
+
+    /// <summary>Returns the last row in the query's order; throws when there are none.</summary>
+    public T Last() => MicroSession.First(MicroSession.Sync(Session.QueryCore<T>(false, LastSql(), 1, default)), orDefault: false)!;
+
+    /// <summary>
+    /// Returns the last row in the query's order, or <see langword="null"/>. The query must be
+    /// ordered: it reads the first row of the reversed order.
+    /// </summary>
+    public async Task<T?> LastOrDefaultAsync(CancellationToken cancellationToken = default) =>
+        MicroSession.First(await Session.QueryCore<T>(true, LastSql(), 1, cancellationToken).ConfigureAwait(false), orDefault: true);
+
+    /// <summary>Returns the last row in the query's order, or <see langword="null"/>.</summary>
+    public T? LastOrDefault() => MicroSession.First(MicroSession.Sync(Session.QueryCore<T>(false, LastSql(), 1, default)), orDefault: true);
+
+    /// <summary>Returns the row at a zero-based position; throws <see cref="ArgumentOutOfRangeException"/> when there are fewer rows.</summary>
+    public async Task<T> ElementAtAsync(int index, CancellationToken cancellationToken = default) =>
+        await ElementAtOrDefaultAsync(index, cancellationToken).ConfigureAwait(false) ?? throw OutOfRange(index);
+
+    /// <summary>Returns the row at a zero-based position; throws <see cref="ArgumentOutOfRangeException"/> when there are fewer rows.</summary>
+    public T ElementAt(int index) => ElementAtOrDefault(index) ?? throw OutOfRange(index);
+
+    /// <summary>Returns the row at a zero-based position, or <see langword="null"/> when there are fewer rows.</summary>
+    public Task<T?> ElementAtOrDefaultAsync(int index, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        return Skip(index).FirstOrDefaultAsync(cancellationToken);
+    }
+
+    /// <summary>Returns the row at a zero-based position, or <see langword="null"/> when there are fewer rows.</summary>
+    public T? ElementAtOrDefault(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        return Skip(index).FirstOrDefault();
+    }
+
+    private static ArgumentOutOfRangeException OutOfRange(int index) =>
+        new(nameof(index), index, "The index is not less than the number of rows.");
+
     // ---- Aggregates ----------------------------------------------------------------------------
 
     /// <summary>Counts the rows.</summary>
@@ -205,6 +322,13 @@ public class Query<T> : IProjectionSource, ISubquerySource
 
     /// <summary>Counts the rows.</summary>
     public long Count() => MicroSession.Sync(Session.ScalarCore<long>(false, AggregateSql(Sql.Sql.Raw("COUNT(*)")), default));
+
+    /// <summary>Counts the rows matching <paramref name="predicate"/>.</summary>
+    public Task<long> CountAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        Where(predicate).CountAsync(cancellationToken);
+
+    /// <summary>Counts the rows matching <paramref name="predicate"/>.</summary>
+    public long Count(Expression<Func<T, bool>> predicate) => Where(predicate).Count();
 
     /// <summary>Returns whether any row matches.</summary>
     public async Task<bool> AnyAsync(CancellationToken cancellationToken = default) =>
@@ -223,6 +347,21 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <c>customers.Where(c =&gt; orders.Any(o =&gt; o.CustomerId == c.Id))</c>.
     /// </summary>
     public bool Any(Expression<Func<T, bool>> predicate) => Where(predicate).Any();
+
+    /// <summary>
+    /// Returns whether every row matches <paramref name="predicate"/>; with no rows, it is
+    /// <see langword="true"/>. As in C#, a row where the predicate compares a <c>NULL</c> (such as
+    /// <c>x.Score &gt; 3</c> for a null <c>int?</c> score) doesn't match.
+    /// </summary>
+    public async Task<bool> AllAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) =>
+        await Session.ScalarCore<bool>(true, AllSql(predicate), cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Returns whether every row matches <paramref name="predicate"/>. Inside another query's
+    /// predicate it becomes a <c>NOT EXISTS</c> subquery, and the predicate may use the outer row:
+    /// <c>customers.Where(c =&gt; orders.All(o =&gt; o.CustomerId != c.Id || o.Paid))</c>.
+    /// </summary>
+    public bool All(Expression<Func<T, bool>> predicate) => MicroSession.Sync(Session.ScalarCore<bool>(false, AllSql(predicate), default));
 
     /// <summary>Sums a value over the rows; an empty set sums to zero.</summary>
     public async Task<TResult> SumAsync<TResult>(Expression<Func<T, TResult>> selector, CancellationToken cancellationToken = default) =>
@@ -341,12 +480,15 @@ public class Query<T> : IProjectionSource, ISubquerySource
         var orderBy = _ordering.Count > 0 && (ordered || IsPaged);
         if (orderBy)
         {
-            sql.Append(" ORDER BY ").Append(Sql.Sql.Join(", ", _ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression)));
+            sql.Append(" ORDER BY ").Append(OrderByList(_ordering));
         }
 
         Dialect.AppendPaging(sql, _skip, _take, orderBy);
         return sql;
     }
+
+    private static Sql.Sql OrderByList(IEnumerable<(Sql.Sql Expression, bool Descending)> ordering) =>
+        Sql.Sql.Join(", ", ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression));
 
     /// <summary>
     /// Selects distinct rows. Like LINQ's <c>Take(n).Select(...).Distinct()</c>, a paged query is
@@ -386,6 +528,38 @@ public class Query<T> : IProjectionSource, ISubquerySource
     }
 
     private Sql.Sql AnySql() => Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (").Append(Limit(1).ToSql()).Append(") THEN 1 ELSE 0 END");
+
+    /// <summary>Whether no row fails the predicate, reading the rows (the page, when paged) in a <c>FROM</c> item.</summary>
+    private Sql.Sql AllSql(Expression<Func<T, bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        var failing = Expression.Lambda(Expression.Not(predicate.Body), predicate.Parameters);
+        return Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (SELECT 1 FROM ").Append(((ISubquerySource)this).FromItem(CheckedRows))
+            .Append(" WHERE ").Append(ExpressionTranslator.Predicate(failing, Map, Dialect, CheckedRows)).Append(") THEN 0 ELSE 1 END");
+    }
+
+    /// <summary>
+    /// Reads the last row: the first in reverse order. A page is read from a derived table, so the
+    /// reversed order picks the page's last row rather than the table's.
+    /// </summary>
+    private Sql.Sql LastSql()
+    {
+        if (_ordering.Count == 0)
+        {
+            throw new NotSupportedException("Last and LastOrDefault need an ordering; call OrderBy first.");
+        }
+
+        var reversed = _ordering.Select(o => (o.Expression, !o.Descending)).ToList();
+        if (!IsPaged)
+        {
+            return new Query<T>(Session, Map, _filters, reversed, _skip, _take, _ignoreQueryFilters).Limit(1).ToSql();
+        }
+
+        var sql = Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
+            .Append(" ORDER BY ").Append(OrderByList(reversed));
+        Dialect.AppendPaging(sql, null, 1, hasOrderBy: true);
+        return sql;
+    }
 
     private Sql.Sql DeleteSql()
     {

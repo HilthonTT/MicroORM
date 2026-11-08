@@ -31,15 +31,25 @@ var total = await active.CountAsync();
 |---|---|
 | `ToListAsync()` / `ToList()` | `List<T>` |
 | `StreamAsync()` / `Stream()` | `IAsyncEnumerable<T>` / `IEnumerable<T>` |
+| `ToDictionaryAsync(c => key)` / `ToDictionaryAsync(c => key, c => value)` | `Dictionary<TKey, ...>`; keys are computed in .NET, and a duplicate key throws |
+| `FirstAsync()` / `FirstAsync(c => ...)` | `T`; throws when there are no rows |
 | `FirstOrDefaultAsync()` / `FirstOrDefaultAsync(c => ...)` | `T?` |
-| `SingleAsync()` | `T`; throws on zero or several rows |
-| `CountAsync()` | `long` |
+| `SingleAsync()` / `SingleAsync(c => ...)` | `T`; throws on zero or several rows |
+| `SingleOrDefaultAsync()` / `SingleOrDefaultAsync(c => ...)` | `T?`; throws on several rows |
+| `LastAsync()` / `LastOrDefaultAsync()` | the last row in the query's order; needs `OrderBy` |
+| `ElementAtAsync(i)` / `ElementAtOrDefaultAsync(i)` | the row at a zero-based position; `ElementAt` throws `ArgumentOutOfRangeException` past the end |
+| `CountAsync()` / `CountAsync(c => ...)` | `long` |
 | `AnyAsync()` / `AnyAsync(c => ...)` | `bool` |
+| `AllAsync(c => ...)` | `bool`; `true` when there are no rows |
 | `SumAsync(c => ...)` | the sum; `0` when there are no rows |
 | `MinAsync(c => ...)` / `MaxAsync(c => ...)` | the extreme value; `default` (`null` for nullable selectors) when there are no rows |
 | `AverageAsync(c => ...)` | `double?`; integers are averaged without truncation; `null` when there are no rows |
 | `Select(c => ...)` | a `Projection` with the same terminal methods (see [Projections](#projections)) |
 | `ToSql()` / `ToString()` | the SQL, without running it |
+
+`LastAsync` reverses the ordering and reads the first row, so it needs `OrderBy`. After `Skip` or
+`Take`, it returns the page's last row. `AllAsync` matches C#: a row where the predicate compares a
+`NULL` (such as `p.Score > 3` for a null `int?`) doesn't match.
 
 Aggregates respect `Where`. After `Skip` or `Take`, they apply to that page only, through a subquery:
 
@@ -90,6 +100,7 @@ subset, use `Where($"...")`.
 | `Math.Min(a, b)`, `Math.Max(a, b)` | `CASE WHEN a <= b THEN a ELSE b END` (and `>=`) |
 | `list.Contains(c.X)`, `array.Contains(c.X)` | `X IN (@p0, @p1, ...)` |
 | `query.Any(o => ...)`, `query.Any()` on another typed query | `EXISTS (SELECT 1 FROM ...)`; see [Subqueries](#subqueries) |
+| `query.All(o => ...)` on another typed query | `NOT EXISTS` of a row that fails the predicate |
 | `projection.Contains(c.X)` on a one-value projection | `EXISTS (...)` matching the value |
 | Captured variables, constants, method calls that don't use the row | evaluated in .NET and sent as parameters |
 
@@ -191,6 +202,9 @@ var withOrders = await db.Table<Customer>().Where(c => ordered.Contains(c.Id)).T
   (including [query filters](/docs/mapping/#query-filters)) and paging apply inside it, as in LINQ.
 - `Contains` is translated to `EXISTS`, not `IN`, and matches `NULL` the way C# does. With
   `NOT IN`, a single `NULL` in the subquery would make the condition match nothing.
+- `All` becomes `NOT EXISTS` of a row that fails the predicate:
+  `customers.Where(c => orders.All(o => o.CustomerId != c.Id || o.Paid))`. A customer with no orders
+  matches, as in LINQ.
 - Subqueries nest. Each level gets its own alias (`s0`, `s1`, ...), so a query can refer to the
   same table it's filtering.
 - Subqueries also work in `Select`, where they become `CASE WHEN EXISTS (...) THEN 1 ELSE 0 END`,
@@ -227,7 +241,9 @@ A projection has the terminal methods of a query, and a few of its own:
 |---|---|
 | `Distinct()` | `SELECT DISTINCT`. After `Skip` or `Take`, the page is taken first, as in LINQ. Any other ordering is dropped, because distinct rows have no order. |
 | `CountAsync()` | counts the projected rows (the distinct ones after `Distinct()`) |
+| `AnyAsync()` | whether there are any projected rows |
 | `ContainsAsync(value)` | whether a one-value projection contains `value` (`null` included) |
+| `FirstAsync()`, `SingleOrDefaultAsync()`, `ToDictionaryAsync(...)` | as on a query |
 
 ```csharp
 var moods = await people.Select(p => p.Mood).Distinct().ToListAsync();

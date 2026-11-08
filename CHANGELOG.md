@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
 - `SqlDialect.DatePart` and `SqlDialect.Substring` for dialects to override.
 - Typed queries translate more expressions: conditionals (`a ? b : c`), `DateTime` and `DateOnly` `AddYears` through `AddSeconds`, `DateTime.Date`, `date ± TimeSpan` values, `(a - b).TotalDays`/`TotalHours`/`TotalMinutes`/`TotalSeconds`, string `IndexOf`, `PadLeft`, `PadRight`, `string.Compare`, `CompareTo`, `string.Concat`, interpolated strings (`string.Format` without format specifiers), integer `ToString()`, `Math.Sqrt`, `Math.Pow`, `Math.Min` and `Math.Max`.
 - `SqlDialect.Position`, `Pad`, `TextType`, `ToInteger`, `DateAdd`, `StartOfDay` and `SecondsBetween` for dialects to override.
+- Terminal operators: `First`, `SingleOrDefault`, `Last`, `LastOrDefault`, `ElementAt`, `ElementAtOrDefault`, `All`, `ToDictionary`, and predicate overloads of `First`, `Single`, `SingleOrDefault` and `Count`. Projections gain `First`, `SingleOrDefault`, `Any` and `ToDictionary`.
+- `query.All(predicate)` inside a predicate becomes `NOT EXISTS` of a row that fails it.
 
 ### Changed
 
