@@ -49,6 +49,11 @@ internal sealed class SqliteDialect : SqlDialect
         return Sql.Sql.Empty.Append("CAST(strftime('" + format + "', ").Append(value).Append(") AS INTEGER)");
     }
 
+    // SQLite has no row locks: a write transaction locks the whole database.
+    public override bool SupportsForUpdate => false;
+
+    public override string ForUpdateClause => string.Empty;
+
     public override Sql.Sql ToInteger(Sql.Sql value) => Sql.Sql.Empty.Append("CAST(").Append(value).Append(" AS INTEGER)");
 
     // SQLite has no LPAD; hex(zeroblob(n)) is n "00" pairs, each replaced with the padding.

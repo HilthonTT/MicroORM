@@ -25,6 +25,7 @@ var total = await active.CountAsync();
 | `IgnoreQueryFilters()` | skips the entity's [query filters](/docs/mapping/#query-filters) |
 | `Distinct()` | `SELECT DISTINCT` over every mapped column; see [Set operations](#set-operations) |
 | `Union(q)` / `Concat(q)` / `Intersect(q)` / `Except(q)` | `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`; see [Set operations](#set-operations) |
+| `ForUpdate()` | locks the rows read; see [Locking rows](#locking-rows) |
 | `GroupBy(c => c.X)` | `GROUP BY`; see [Grouping](#grouping) |
 
 ## Running a query
@@ -177,8 +178,15 @@ var debited = await db.Table<Account>()
     .ExecuteUpdateReturningAsync(s => s.SetFrom(a => a.Balance, a => a.Balance - amount));
 ```
 
-MySQL and MariaDB can't return updated rows, so there it throws `NotSupportedException`. On SQL
-Server, `OUTPUT` fails on a table with triggers.
+`ExecuteDeleteReturningAsync` deletes the same way and returns the deleted rows as they were
+(`RETURNING`, or `OUTPUT DELETED.*`).
+
+```csharp
+var expired = await db.Table<Session>().Where(s => s.ExpiresAt < now).ExecuteDeleteReturningAsync();
+```
+
+MySQL and MariaDB can't return updated or deleted rows, so there both throw `NotSupportedException`.
+On SQL Server, `OUTPUT` fails on a table with triggers.
 
 ## Set operations
 
@@ -220,6 +228,28 @@ var everyone = people.Select(p => p.Email).Union(db.Table<Customer>().Select(c =
 var neverOrdered = people.Select(p => p.Id).Except(orders.Select(o => o.CustomerId));
 var lonely = await people.Where(p => neverOrdered.Contains(p.Id)).ToListAsync();
 ```
+
+## Locking rows
+
+`ForUpdate()` locks the rows a query reads until the transaction ends, so no other transaction can
+change them between your read and your write:
+
+```csharp
+await db.TransactionAsync(async tx =>
+{
+    var account = await tx.Table<Account>().Where(a => a.Id == id).ForUpdate().SingleAsync();
+    account.Balance -= amount;
+    await tx.Table<Account>().UpdateAsync(account);
+});
+// SELECT ... FROM "accounts" WHERE ("id" = @p0) LIMIT 2 FOR UPDATE
+```
+
+- PostgreSQL and MySQL append `FOR UPDATE`. SQL Server adds the table hint `WITH (UPDLOCK, ROWLOCK)`.
+  SQLite has no row locks (a write transaction locks the whole database), so `ForUpdate` throws there.
+- Use it inside a transaction. Outside one, the lock ends with the statement.
+- It applies to queries that read rows: `ToList`, `First`, `Single`, `Stream`, and projections
+  without `Distinct`. Counts, aggregates, `Any`, `All`, grouping, set operations and subqueries
+  throw instead of reading the rows without the lock.
 
 ## Subqueries
 

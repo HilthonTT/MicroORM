@@ -80,6 +80,11 @@ internal sealed class SqlServerDialect : SqlDialect
     public override Sql.Sql SecondsBetween(Sql.Sql earlier, Sql.Sql later) =>
         Sql.Sql.Empty.Append("(CAST(DATEDIFF_BIG(microsecond, ").Append(earlier).Append(", ").Append(later).Append(") AS FLOAT) / 1000000)");
 
+    // UPDLOCK holds the lock until the transaction ends; ROWLOCK keeps it to the rows read.
+    public override string ForUpdateTableHint => " WITH (UPDLOCK, ROWLOCK)";
+
+    public override string ForUpdateClause => string.Empty;
+
     public override void ConfigureParameter(DbParameter parameter, SqlParameterValue value)
     {
         ArgumentNullException.ThrowIfNull(parameter);
@@ -143,6 +148,13 @@ internal sealed class SqlServerDialect : SqlDialect
     {
         var sql = Sql.Sql.Empty.Append("UPDATE ").AppendIdentifier(table).Append(" SET ").Append(assignments)
             .Append(" OUTPUT ").Append(Sql.Sql.Join(", ", returning.Select(c => Sql.Sql.Raw("INSERTED.").AppendIdentifier(c))));
+        return condition is null ? sql : sql.Append(" WHERE ").Append(condition);
+    }
+
+    public override Sql.Sql DeleteReturning(string table, Sql.Sql? condition, IReadOnlyList<string> returning)
+    {
+        var sql = Sql.Sql.Empty.Append("DELETE FROM ").AppendIdentifier(table)
+            .Append(" OUTPUT ").Append(Sql.Sql.Join(", ", returning.Select(c => Sql.Sql.Raw("DELETED.").AppendIdentifier(c))));
         return condition is null ? sql : sql.Append(" WHERE ").Append(condition);
     }
 

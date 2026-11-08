@@ -9,6 +9,10 @@ namespace MicroORM.Tests.Integration;
 [Collection(ProviderCollectionDefinition.Name)]
 public class QueryApiTests
 {
+    public static TheoryData<string> Returning => TestDatabase.With(["sqlite", "postgres", "sqlserver"]);
+
+    public static TheoryData<string> RowLocks => TestDatabase.With(["postgres", "sqlserver", "mysql"]);
+
     private static async Task<string[]> NamesAsync(Query<Person> query) => [.. (await query.OrderBy(p => p.Name).ToListAsync()).Select(p => p.Name)];
 
     // ---- Terminal operators --------------------------------------------------------------------
@@ -161,6 +165,41 @@ public class QueryApiTests
         var rows = await people.Where(p => p.Age < 30).Select(p => new { p.Name, p.Age })
             .Union(people.Where(p => p.Age > 50).Select(p => new { p.Name, p.Age })).ToListAsync();
         Assert.Equal([("Brendan", 17), ("Cleo", 52), ("Dmitri", 29)], rows.Select(r => (r.Name, r.Age)).Order());
+    }
+
+    // ---- Writes and locks ------------------------------------------------------------------------
+
+    [ProviderTheory("sqlite", "postgres", "sqlserver")]
+    [MemberData(nameof(Returning))]
+    public async Task Execute_delete_returning_reads_the_deleted_rows(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        await OrdersAsync(database);
+        var orders = database.Db.Table<Order>();
+
+        var deleted = await orders.Where(o => o.Amount < 20).ExecuteDeleteReturningAsync();
+        Assert.Equal([5, 10], deleted.Select(o => o.Amount).Order());
+        Assert.All(deleted, o => Assert.True(o.Id > 0));
+        Assert.Equal(4, await orders.CountAsync());
+        Assert.Single(orders.Where(o => o.PersonId == null).ExecuteDeleteReturning());
+    }
+
+    [ProviderTheory("postgres", "sqlserver", "mysql")]
+    [MemberData(nameof(RowLocks))]
+    public async Task For_update_locks_the_rows_read(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+
+        await database.Db.TransactionAsync(async tx =>
+        {
+            var people = tx.Table<Person>();
+            var ada = await people.Where(p => p.Name == "Ada").ForUpdate().SingleAsync();
+            ada.Age++;
+            await people.UpdateAsync(ada);
+            Assert.Equal(["Brendan"], (await people.OrderBy(p => p.Age).Take(1).ForUpdate().Select(p => p.Name).ToListAsync()).ToArray());
+        });
+
+        Assert.Equal(37, (await database.Db.Table<Person>().SingleAsync(p => p.Name == "Ada")).Age);
     }
 
     // ---- Translation ---------------------------------------------------------------------------

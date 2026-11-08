@@ -125,7 +125,11 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// paged query is paged first, as in LINQ; otherwise its ordering is dropped, since distinct
     /// rows have no order. Filter, sort and page the result as any query.
     /// </summary>
-    public Query<T> Distinct() => Derived(DistinctSql(AllColumns));
+    public Query<T> Distinct()
+    {
+        ThrowIfLocked("Distinct");
+        return Derived(DistinctSql(AllColumns));
+    }
 
     /// <summary>
     /// Combines the rows of this query and <paramref name="other"/>, each distinct row once
@@ -148,6 +152,27 @@ public class Query<T> : IProjectionSource, ISubquerySource
     public Query<T> Except(Query<T> other) => Combine(other, "EXCEPT", nameof(Except));
 
     /// <summary>
+    /// Locks the rows the query reads until the transaction ends, so no other transaction can change
+    /// or lock them first: <c>FOR UPDATE</c> on PostgreSQL and MySQL, <c>WITH (UPDLOCK, ROWLOCK)</c>
+    /// on SQL Server. Use it inside a transaction, which a read then update needs anyway.
+    /// </summary>
+    /// <remarks>
+    /// It applies to queries that read rows (<c>ToList</c>, <c>First</c>, <c>Single</c>, <c>Stream</c>
+    /// and projections without <c>Distinct</c>); counts, aggregates, <c>Any</c>, grouping, set
+    /// operations and subqueries throw instead of reading without the lock.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">SQLite, which has no row locks; a write transaction locks the whole database.</exception>
+    public Query<T> ForUpdate()
+    {
+        if (!Dialect.SupportsForUpdate)
+        {
+            throw new NotSupportedException($"{Dialect} has no row locks; a write transaction locks the whole database instead.");
+        }
+
+        return With(_state with { ForUpdate = true });
+    }
+
+    /// <summary>
     /// Selects only some values per row: one value (<c>x =&gt; x.Name</c>), an anonymous type
     /// (<c>x =&gt; new { x.Id, Upper = x.Name.ToUpper() }</c>), a record or a DTO.
     /// </summary>
@@ -166,6 +191,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
     public GroupedQuery<TKey, T> GroupBy<TKey>(Expression<Func<T, TKey>> key)
     {
         ArgumentNullException.ThrowIfNull(key);
+        ThrowIfLocked("GroupBy");
         return new GroupedQuery<TKey, T>(this, key);
     }
 
@@ -192,6 +218,15 @@ public class Query<T> : IProjectionSource, ISubquerySource
         if (IsPaged)
         {
             throw new NotSupportedException($"{operation} cannot follow Skip or Take; call it before them.");
+        }
+    }
+
+    /// <summary>Throws when a locked query would be read without its lock: inside another statement, or aggregated.</summary>
+    private void ThrowIfLocked(string operation)
+    {
+        if (_state.ForUpdate)
+        {
+            throw new NotSupportedException($"{operation} can't be combined with ForUpdate, which only locks the rows a query reads.");
         }
     }
 
@@ -437,6 +472,18 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <summary>Deletes every matching row in one statement. Without a filter, deletes the whole table.</summary>
     public int ExecuteDelete() => MicroSession.Sync(Session.ExecuteCore(false, DeleteSql(), default));
 
+    /// <summary>
+    /// Deletes every matching row in one statement and returns the rows as they were, using
+    /// <c>RETURNING</c> (SQLite, PostgreSQL) or <c>OUTPUT</c> (SQL Server). MySQL can't return
+    /// deleted rows and throws <see cref="NotSupportedException"/>.
+    /// </summary>
+    /// <remarks>On SQL Server, <c>OUTPUT</c> fails on a table with triggers.</remarks>
+    public Task<List<T>> ExecuteDeleteReturningAsync(CancellationToken cancellationToken = default) =>
+        Session.QueryCore<T>(true, DeleteReturningSql(), null, cancellationToken).AsTask();
+
+    /// <summary>Deletes every matching row in one statement and returns the rows as they were.</summary>
+    public List<T> ExecuteDeleteReturning() => MicroSession.Sync(Session.QueryCore<T>(false, DeleteReturningSql(), null, default));
+
     /// <summary>Updates every matching row in one statement.</summary>
     /// <example><code>await users.Where(u =&gt; u.LastSeen &lt; cutoff).ExecuteUpdateAsync(s =&gt; s.Set(u =&gt; u.Active, false));</code></example>
     /// <returns>The number of updated rows.</returns>
@@ -478,6 +525,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
             return (limit is int count ? Limit(count) : this).SelectSql(selectList, ordered);
         }
 
+        ThrowIfLocked("Distinct");
         if (limit is null)
         {
             return DistinctSql(selectList);
@@ -490,9 +538,13 @@ public class Query<T> : IProjectionSource, ISubquerySource
         return sql;
     }
 
-    Sql.Sql ISubquerySource.FromItem(string alias) => !IsPaged && !HasFilters && _state.Source is null
-        ? Sql.Sql.Identifier(Map.Table).Append(" AS ").AppendIdentifier(alias)
-        : Sql.Sql.Empty.Append("(").Append(SelectSql(AllColumns, ordered: false)).Append(") AS ").AppendIdentifier(alias);
+    Sql.Sql ISubquerySource.FromItem(string alias)
+    {
+        ThrowIfLocked("A subquery");
+        return !IsPaged && !HasFilters && _state.Source is null
+            ? Sql.Sql.Identifier(Map.Table).Append(" AS ").AppendIdentifier(alias)
+            : Sql.Sql.Empty.Append("(").Append(SelectSql(AllColumns, ordered: false)).Append(") AS ").AppendIdentifier(alias);
+    }
 
     /// <summary>The <c>WHERE</c> clause of the filters (empty without filters); paging is not included.</summary>
     internal Sql.Sql WhereClause() => WhereClause(Filters);
@@ -500,7 +552,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <summary>What the query reads from: the table, or a derived table under <see cref="Alias"/>.</summary>
     internal Sql.Sql FromClause() => _state.Source is { } source
         ? Sql.Sql.Empty.Append("(").Append(source).Append(") AS ").AppendIdentifier(Alias)
-        : Sql.Sql.Identifier(Map.Table);
+        : Sql.Sql.Identifier(Map.Table).Append(_state.ForUpdate ? Dialect.ForUpdateTableHint : string.Empty);
 
     private Sql.Sql SelectSql(Sql.Sql selectList, bool ordered, bool distinct)
     {
@@ -510,7 +562,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
         var filters = Filters;
         if (_state.Take == 0)
         {
-            return sql.Append(WhereClause([.. filters, Sql.Sql.Raw("1 = 0")]));
+            return AppendLock(sql.Append(WhereClause([.. filters, Sql.Sql.Raw("1 = 0")])));
         }
 
         sql.Append(WhereClause(filters));
@@ -521,12 +573,14 @@ public class Query<T> : IProjectionSource, ISubquerySource
         }
 
         Dialect.AppendPaging(sql, _state.Skip, _state.Take, orderBy);
-        return sql;
+        return AppendLock(sql);
     }
 
     private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
         ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))
         : Sql.Sql.Empty;
+
+    private Sql.Sql AppendLock(Sql.Sql sql) => _state.ForUpdate ? sql.Append(Dialect.ForUpdateClause) : sql;
 
     private static Sql.Sql OrderByList(IEnumerable<(Sql.Sql Expression, bool Descending)> ordering) =>
         Sql.Sql.Join(", ", ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression));
@@ -554,21 +608,29 @@ public class Query<T> : IProjectionSource, ISubquerySource
             throw new NotSupportedException($"{operation} needs two queries that map {typeof(T).Name} to the same columns.");
         }
 
-        return Derived(Operand().Append(" " + setOperator + " ").Append(other.Operand()));
+        return Derived(Operand(operation).Append(" " + setOperator + " ").Append(other.Operand(operation)));
     }
 
     /// <summary>
     /// The query as one side of a set operation. Its ordering is dropped, as SQL requires; a page
     /// is read from a derived table, since a set operation's sides can't be paged in SQLite.
     /// </summary>
-    private Sql.Sql Operand() => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
-        : SelectSql(AllColumns, ordered: false);
+    private Sql.Sql Operand(string operation)
+    {
+        ThrowIfLocked(operation);
+        return IsPaged
+            ? Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
+            : SelectSql(AllColumns, ordered: false);
+    }
 
     /// <summary>Applies an aggregate to the filtered rows, or to the page when Skip/Take is set.</summary>
-    private Sql.Sql AggregateSql(Sql.Sql aggregate) => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
-        : Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM ").Append(FromClause()).Append(WhereClause());
+    private Sql.Sql AggregateSql(Sql.Sql aggregate)
+    {
+        ThrowIfLocked("An aggregate");
+        return IsPaged
+            ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
+            : Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM ").Append(FromClause()).Append(WhereClause());
+    }
 
     private Sql.Sql Aggregate(string function, LambdaExpression selector)
     {
@@ -583,7 +645,11 @@ public class Query<T> : IProjectionSource, ISubquerySource
         return AggregateSql(aggregate);
     }
 
-    private Sql.Sql AnySql() => Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (").Append(Limit(1).ToSql()).Append(") THEN 1 ELSE 0 END");
+    private Sql.Sql AnySql()
+    {
+        ThrowIfLocked("Any");
+        return Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (").Append(Limit(1).ToSql()).Append(") THEN 1 ELSE 0 END");
+    }
 
     /// <summary>Whether no row fails the predicate, reading the rows (the page, when paged) in a <c>FROM</c> item.</summary>
     private Sql.Sql AllSql(Expression<Func<T, bool>> predicate)
@@ -611,6 +677,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
             return With(_state with { Ordering = reversed }).Limit(1).ToSql();
         }
 
+        ThrowIfLocked("Last of a page");
         var sql = Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
             .Append(" ORDER BY ").Append(OrderByList(reversed));
         Dialect.AppendPaging(sql, null, 1, hasOrderBy: true);
@@ -621,6 +688,13 @@ public class Query<T> : IProjectionSource, ISubquerySource
     {
         ThrowIfShaped("ExecuteDelete");
         return Sql.Sql.Empty.Append("DELETE FROM ").AppendIdentifier(Map.Table).Append(WhereClause());
+    }
+
+    private Sql.Sql DeleteReturningSql()
+    {
+        ThrowIfShaped("ExecuteDeleteReturning");
+        var filters = Filters;
+        return Dialect.DeleteReturning(Map.Table, filters.Count > 0 ? Sql.Sql.Join(" AND ", filters) : null, Map.Columns.Select(c => c.Name).ToList());
     }
 
     private Sql.Sql UpdateSql(Action<UpdateBuilder<T>> set) =>
@@ -677,15 +751,17 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <param name="Take">The most rows to return.</param>
     /// <param name="IgnoreQueryFilters">Whether to skip the mapping's query filters.</param>
     /// <param name="Source">A derived table read in place of the table, for <c>Distinct</c> and set operations.</param>
+    /// <param name="ForUpdate">Whether to lock the rows read.</param>
     private sealed record State(
         IReadOnlyList<Sql.Sql> Filters,
         IReadOnlyList<(Sql.Sql Expression, bool Descending)> Ordering,
         int? Skip,
         int? Take,
         bool IgnoreQueryFilters,
-        Sql.Sql? Source)
+        Sql.Sql? Source,
+        bool ForUpdate)
     {
         /// <summary>Every row of the table.</summary>
-        public static readonly State Table = new([], [], null, null, false, null);
+        public static readonly State Table = new([], [], null, null, false, null, false);
     }
 }

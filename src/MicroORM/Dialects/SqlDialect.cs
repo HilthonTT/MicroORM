@@ -178,6 +178,18 @@ public abstract class SqlDialect
     public virtual SQL SecondsBetween(SQL earlier, SQL later) =>
         SQL.Empty.Append("EXTRACT(EPOCH FROM (").Append(later).Append(" - ").Append(earlier).Append("))");
 
+    /// <summary>
+    /// Gets whether the database can lock the rows a query reads until the transaction ends
+    /// (<see cref="Querying.Query{T}.ForUpdate"/>).
+    /// </summary>
+    public virtual bool SupportsForUpdate => true;
+
+    /// <summary>Gets the table hint that locks the rows read, written after the table name (SQL Server's <c>WITH (UPDLOCK)</c>).</summary>
+    public virtual string ForUpdateTableHint => string.Empty;
+
+    /// <summary>Gets the clause that locks the rows read, written at the end of the <c>SELECT</c>.</summary>
+    public virtual string ForUpdateClause => " FOR UPDATE";
+
     /// <summary>Appends a paging clause to a <c>SELECT</c> statement.</summary>
     /// <param name="sql">The statement to append to.</param>
     /// <param name="skip">Rows to skip, if any.</param>
@@ -259,6 +271,26 @@ public abstract class SqlDialect
         ArgumentNullException.ThrowIfNull(returning, nameof(returning));
 
         var sql = SQL.Empty.Append("UPDATE ").AppendIdentifier(table).Append(" SET ").Append(assignments);
+        if (condition is not null)
+        {
+            sql.Append(" WHERE ").Append(condition);
+        }
+
+        return sql.Append(" RETURNING ").Append(SQL.Join(", ", returning.Select(SQL.Identifier)));
+    }
+
+    /// <summary>
+    /// Builds a <c>DELETE</c> that also returns the <paramref name="returning"/> columns of every
+    /// deleted row, as a result set.
+    /// </summary>
+    /// <param name="table">The table.</param>
+    /// <param name="condition">The <c>WHERE</c> condition, or <see langword="null"/> to delete every row.</param>
+    /// <param name="returning">The columns to return.</param>
+    public virtual SQL DeleteReturning(string table, SQL? condition, IReadOnlyList<string> returning)
+    {
+        ArgumentNullException.ThrowIfNull(returning, nameof(returning));
+
+        var sql = SQL.Empty.Append("DELETE FROM ").AppendIdentifier(table);
         if (condition is not null)
         {
             sql.Append(" WHERE ").Append(condition);

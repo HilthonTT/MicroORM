@@ -110,6 +110,9 @@ internal sealed class MySqlDialect : SqlDialect
     public override Sql.Sql UpdateReturning(string table, Sql.Sql assignments, Sql.Sql? condition, IReadOnlyList<string> returning) =>
         throw new NotSupportedException("MySQL and MariaDB can't return the rows an UPDATE changed; run ExecuteUpdate, then query the rows.");
 
+    public override Sql.Sql DeleteReturning(string table, Sql.Sql? condition, IReadOnlyList<string> returning) =>
+        throw new NotSupportedException("MySQL and MariaDB can't return the rows a DELETE removed; query the rows, then run ExecuteDelete.");
+
     protected override void AppendInsertBody(Sql.Sql sql, IReadOnlyList<ColumnValue> values)
     {
         if (values.Count == 0)

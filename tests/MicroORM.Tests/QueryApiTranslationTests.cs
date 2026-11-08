@@ -281,6 +281,44 @@ public class QueryApiTranslationTests
         Assert.Throws<NotSupportedException>(() => sqlite.Union(sqlite).ExecuteUpdate(s => s.Set(p => p.Age, 1)));
     }
 
+    // ---- Writes and locks ------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("SQLite", "DELETE FROM \"micro_people\" WHERE age > @p0 RETURNING \"id\", \"name\"")]
+    [InlineData("PostgreSQL", "DELETE FROM \"micro_people\" WHERE age > @p0 RETURNING \"id\", \"name\"")]
+    [InlineData("SQL Server", "DELETE FROM [micro_people] OUTPUT DELETED.[id], DELETED.[name] WHERE age > @p0")]
+    public void Delete_returning(string dialectName, string expected)
+    {
+        var dialect = TestDialects.ByName(dialectName);
+        MicroORM.Sql.Sql condition = $"age > {3}";
+        Assert.Equal(expected, dialect.DeleteReturning("micro_people", condition, ["id", "name"]).Render(dialect).Text);
+        Assert.Throws<NotSupportedException>(() => People(SqlDialect.MySql).ExecuteDeleteReturning());
+    }
+
+    [Theory]
+    [InlineData("PostgreSQL", "SELECT \"name\" AS \"value\" FROM \"micro_people\" WHERE (\"age\" > @p0) ORDER BY \"id\" LIMIT 1 FOR UPDATE")]
+    [InlineData("SQL Server", "SELECT [name] AS [value] FROM [micro_people] WITH (UPDLOCK, ROWLOCK) WHERE ([age] > @p0) ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY")]
+    [InlineData("MySQL", "SELECT `name` AS `value` FROM `micro_people` WHERE (`age` > @p0) ORDER BY `id` LIMIT 1 FOR UPDATE")]
+    public void For_update_locks_the_rows_read(string dialectName, string expected)
+    {
+        var dialect = TestDialects.ByName(dialectName);
+        var locked = People(dialect).Where(p => p.Age > 3).OrderBy(p => p.Id).Take(1).ForUpdate();
+        Assert.Equal(expected, locked.Select(p => p.Name).ToSql().Render(dialect).Text);
+
+        // Anything that would read the rows without the lock throws instead.
+        Assert.Throws<NotSupportedException>(() => locked.Count());
+        Assert.Throws<NotSupportedException>(() => locked.Any());
+        Assert.Throws<NotSupportedException>(() => locked.Distinct());
+        Assert.Throws<NotSupportedException>(() => locked.GroupBy(p => p.Age));
+        Assert.Throws<NotSupportedException>(() => locked.Union(People(dialect)));
+        Assert.Throws<NotSupportedException>(() => locked.Select(p => p.Name).Distinct().ToSql());
+        Assert.Throws<NotSupportedException>(() => People(dialect).Where(p => locked.Any(q => q.Id == p.Id)));
+    }
+
+    [Fact]
+    public void For_update_throws_on_sqlite() =>
+        Assert.Throws<NotSupportedException>(() => People(SqlDialect.Sqlite).ForUpdate());
+
     private static DbConnection NoConnection() => throw new InvalidOperationException("No database in translation tests.");
 
     [Table("holidays")]
