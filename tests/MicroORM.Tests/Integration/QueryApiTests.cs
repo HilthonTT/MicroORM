@@ -97,6 +97,72 @@ public class QueryApiTests
         Assert.Equal("Cleo", names.ToDictionary(n => n.Length == 4 ? "four" : n)["four"]);
     }
 
+    // ---- Distinct and set operations ------------------------------------------------------------
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Set_operations_combine_queries(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        await OrdersAsync(database);
+        var people = database.Db.Table<Person>();
+        var orders = database.Db.Table<Order>();
+        var over30 = people.Where(p => p.Age > 30);
+        var happy = people.Where(p => p.Mood == Mood.Happy);
+
+        Assert.Equal(["50% Eve_", "Ada", "Cleo", "Dmitri"], await NamesAsync(over30.Union(happy)));
+        Assert.Equal(5, await over30.Concat(happy).CountAsync());
+        Assert.Equal(["Ada"], await NamesAsync(over30.Intersect(happy)));
+        Assert.Equal(["50% Eve_", "Cleo"], await NamesAsync(over30.Except(happy)));
+
+        // Each side keeps its own ordering and paging: the youngest and the oldest.
+        var ends = people.OrderBy(p => p.Age).Take(1).Union(people.OrderByDescending(p => p.Age).Take(1));
+        Assert.Equal(["Brendan", "Cleo"], await NamesAsync(ends));
+
+        // The result composes like a table: filters, correlated subqueries, paging, projections, grouping.
+        var combined = over30.Union(happy);
+        Assert.Equal(["Ada", "Cleo", "Dmitri"], await NamesAsync(combined.Where(p => orders.Any(o => o.PersonId == p.Id))));
+        Assert.Equal("Ada", (await combined.OrderBy(p => p.Name).Skip(1).FirstAsync()).Name);
+        Assert.Equal(new[] { 29, 36, 41, 52 }, (await combined.OrderBy(p => p.Age).Select(p => p.Age).ToListAsync()).ToArray());
+        Assert.Equal(2, await combined.GroupBy(p => p.Mood == Mood.Happy).CountAsync());
+        Assert.Equal(52, await combined.MaxAsync(p => p.Age));
+        Assert.True(await combined.AllAsync(p => p.Age > 20));
+
+        Assert.Equal(5, await people.Concat(people).Distinct().CountAsync());
+        Assert.Equal(10, people.Concat(people).Count());
+        Assert.Equal(["Ada", "Dmitri"], await NamesAsync(people.Concat(happy).Distinct().Where(p => p.Mood == Mood.Happy)));
+
+        Assert.Throws<NotSupportedException>(() => combined.ExecuteDelete());
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+    public async Task Set_operations_combine_projections(string provider)
+    {
+        await using var database = await PeopleAsync(provider);
+        await OrdersAsync(database);
+        var people = database.Db.Table<Person>();
+        var orders = database.Db.Table<Order>();
+
+        // Two emails, NULL once, and five names.
+        Assert.Equal(8, await people.Select(p => p.Email).Union(people.Select(p => (string?)p.Name)).CountAsync());
+        Assert.Equal(10, people.Select(p => p.Email).Concat(people.Select(p => (string?)p.Name)).Count());
+
+        // Across tables: people with and without orders.
+        var buyers = orders.Where(o => o.PersonId != null).Select(o => o.PersonId!.Value);
+        var withOrders = people.Select(p => p.Id).Intersect(buyers);
+        var withoutOrders = people.Select(p => p.Id).Except(buyers);
+        Assert.Equal(3, await withOrders.CountAsync());
+        Assert.Equal(["50% Eve_", "Brendan"], await NamesAsync(people.Where(p => withoutOrders.Contains(p.Id))));
+        Assert.Equal(2, (await withoutOrders.ToListAsync()).Count);
+        Assert.Equal(3, (await people.Select(p => p.Mood).Union(people.Select(p => p.Mood)).Distinct().ToListAsync()).Count);
+        Assert.NotEqual(0, await withOrders.FirstAsync());
+
+        var rows = await people.Where(p => p.Age < 30).Select(p => new { p.Name, p.Age })
+            .Union(people.Where(p => p.Age > 50).Select(p => new { p.Name, p.Age })).ToListAsync();
+        Assert.Equal([("Brendan", 17), ("Cleo", 52), ("Dmitri", 29)], rows.Select(r => (r.Name, r.Age)).Order());
+    }
+
     // ---- Translation ---------------------------------------------------------------------------
 
     [Theory]

@@ -26,7 +26,7 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
         _distinct = distinct;
     }
 
-    private MicroSession Session => _source.Session;
+    internal MicroSession Session => _source.Session;
 
     MicroSession IValueSubquerySource.Session => Session;
 
@@ -37,6 +37,26 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
     /// first, as in LINQ; otherwise its ordering is dropped, since distinct rows have no order.
     /// </summary>
     public Projection<T, TResult> Distinct() => new(_source, _selectList, _singleValue, distinct: true);
+
+    /// <summary>
+    /// Combines these rows with <paramref name="other"/>'s, each distinct row once (<c>UNION</c>).
+    /// The other projection may read another table: <c>people.Select(p =&gt; p.Email).Union(customers.Select(c =&gt; c.Email))</c>.
+    /// Each side keeps its own filters and paging; the result has no order.
+    /// </summary>
+    public Projection<T, TResult> Union<TOther>(Projection<TOther, TResult> other)
+        where TOther : class => Combine(other, "UNION", nameof(Union));
+
+    /// <summary>Appends <paramref name="other"/>'s rows to these, duplicates included (<c>UNION ALL</c>).</summary>
+    public Projection<T, TResult> Concat<TOther>(Projection<TOther, TResult> other)
+        where TOther : class => Combine(other, "UNION ALL", nameof(Concat));
+
+    /// <summary>Returns the distinct rows found in both projections (<c>INTERSECT</c>).</summary>
+    public Projection<T, TResult> Intersect<TOther>(Projection<TOther, TResult> other)
+        where TOther : class => Combine(other, "INTERSECT", nameof(Intersect));
+
+    /// <summary>Returns the distinct rows of this projection that <paramref name="other"/> doesn't have (<c>EXCEPT</c>).</summary>
+    public Projection<T, TResult> Except<TOther>(Projection<TOther, TResult> other)
+        where TOther : class => Combine(other, "EXCEPT", nameof(Except));
 
     /// <summary>Runs the query and returns every projected row.</summary>
     public Task<List<TResult>> ToListAsync(CancellationToken cancellationToken = default) =>
@@ -157,6 +177,26 @@ public sealed class Projection<T, TResult> : IValueSubquerySource
         Sql.Sql.Empty.Append("(").Append(_source.SelectSql(_selectList, _distinct, null, ordered: false)).Append(") AS ").AppendIdentifier(alias);
 
     private Sql.Sql AnySql() => Sql.Sql.Empty.Append("SELECT CASE WHEN EXISTS (").Append(Limited(1)).Append(") THEN 1 ELSE 0 END");
+
+    /// <summary>Combines this projection with another through a set operator.</summary>
+    private Projection<T, TResult> Combine<TOther>(Projection<TOther, TResult> other, string setOperator, string operation)
+        where TOther : class
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (!ReferenceEquals(other.Session.Dialect, Session.Dialect))
+        {
+            throw new NotSupportedException($"{operation} needs two projections for the same database, but got {Session.Dialect} and {other.Session.Dialect}.");
+        }
+
+        var combined = Operand().Append(" " + setOperator + " ").Append(other.Operand());
+        return new Projection<T, TResult>(new CombinedSource(Session, combined), Sql.Sql.Raw("*"), _singleValue);
+    }
+
+    /// <summary>
+    /// This projection as one side of a set operation, always in a derived table: a side can't be
+    /// ordered or paged in SQLite, and the derived table keeps any paging inside it.
+    /// </summary>
+    internal Sql.Sql Operand() => Sql.Sql.Empty.Append("SELECT * FROM ").Append(Derived("operand"));
 
     private Sql.Sql CountSql() => Sql.Sql.Empty.Append("SELECT COUNT(*) FROM ").Append(Derived("projected"));
 

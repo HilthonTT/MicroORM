@@ -61,8 +61,14 @@ internal sealed class ExpressionTranslator
         _parameters = [entity, .. _outer.Select(s => s.Parameter)];
     }
 
-    /// <summary>How a subquery refers to this entity: by its alias, or at the top level by its table.</summary>
-    private string Reference => _qualifier ?? _map.Table;
+    /// <summary>
+    /// How a subquery refers to this entity: by its alias, or at the top level by its table's name
+    /// without the schema, which is also the alias of a derived table read in its place.
+    /// </summary>
+    private string Reference => _qualifier ?? TableAlias(_map.Table);
+
+    /// <summary>A table's name without its schema, usable as an alias of a derived table read in its place.</summary>
+    internal static string TableAlias(string table) => table[(table.LastIndexOf('.') + 1)..];
 
     /// <summary>Translates a predicate (<c>x =&gt; bool</c>) into a <c>WHERE</c> condition, or over groups into a <c>HAVING</c> one.</summary>
     public static Sql.Sql Predicate(LambdaExpression lambda, EntityMap map, SqlDialect dialect, GroupKey? group = null) =>

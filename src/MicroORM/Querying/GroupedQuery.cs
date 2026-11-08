@@ -168,7 +168,7 @@ public sealed class GroupedQuery<TKey, T> : IProjectionSource
     {
         if (!_derived)
         {
-            return Sql.Sql.Empty.Append(" FROM ").AppendIdentifier(_source.Map.Table).Append(_source.WhereClause());
+            return Sql.Sql.Empty.Append(" FROM ").Append(_source.FromClause()).Append(_source.WhereClause());
         }
 
         // Every column, so aggregates can use any of them, plus the computed key parts.

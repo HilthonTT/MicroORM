@@ -23,11 +23,13 @@ All notable changes to this project are documented here. The format follows
 - `SqlDialect.Position`, `Pad`, `TextType`, `ToInteger`, `DateAdd`, `StartOfDay` and `SecondsBetween` for dialects to override.
 - Terminal operators: `First`, `SingleOrDefault`, `Last`, `LastOrDefault`, `ElementAt`, `ElementAtOrDefault`, `All`, `ToDictionary`, and predicate overloads of `First`, `Single`, `SingleOrDefault` and `Count`. Projections gain `First`, `SingleOrDefault`, `Any` and `ToDictionary`.
 - `query.All(predicate)` inside a predicate becomes `NOT EXISTS` of a row that fails it.
+- Set operations on typed queries: `Union`, `Concat` (`UNION ALL`), `Intersect` and `Except`, plus `Query<T>.Distinct()`. Each side keeps its own filters and paging, and the result composes like a table (filters, ordering, paging, projections, grouping, aggregates). Projections combine too, across tables.
 
 ### Changed
 
 - Outside a transaction, `InsertMany` opens its own only when it needs more than one statement. A single multi-row `INSERT` is atomic without one.
 - `Where`, `OrderBy` and `ThenBy` after `Skip` or `Take` throw `NotSupportedException`. They used to filter or order before the paging, so `Take(2).Where(...)` could return rows LINQ would not.
+- Correlated subqueries refer to the outer table by its name without the schema (`"people"."id"`, not `"dbo"."people"."id"`), which is also the alias of a derived table read in its place.
 - On SQL Server, string concatenation uses `CONCAT(...)` instead of `+`, so `x.Name + x.Age` concatenates instead of adding numbers, and a `NULL` operand counts as an empty string, as in C#.
 
 ### Security

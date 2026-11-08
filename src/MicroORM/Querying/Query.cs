@@ -18,26 +18,18 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// <summary>The alias of the rows <see cref="AllAsync"/> checks, distinct from the <c>s0</c>, <c>s1</c>... of nested subqueries.</summary>
     private const string CheckedRows = "checked_rows";
 
-    private readonly IReadOnlyList<Sql.Sql> _filters;
-    private readonly IReadOnlyList<(Sql.Sql Expression, bool Descending)> _ordering;
-    private readonly int? _skip;
-    private readonly int? _take;
-    private readonly bool _ignoreQueryFilters;
+    private readonly State _state;
 
     internal Query(MicroSession session, EntityMap map)
-        : this(session, map, [], [], null, null, false)
+        : this(session, map, State.Table)
     {
     }
 
-    private Query(MicroSession session, EntityMap map, IReadOnlyList<Sql.Sql> filters, IReadOnlyList<(Sql.Sql, bool)> ordering, int? skip, int? take, bool ignoreQueryFilters)
+    private Query(MicroSession session, EntityMap map, State state)
     {
         Session = session;
         Map = map;
-        _filters = filters;
-        _ordering = ordering;
-        _skip = skip;
-        _take = take;
-        _ignoreQueryFilters = ignoreQueryFilters;
+        _state = state;
     }
 
     /// <summary>Gets the mapping of <typeparamref name="T"/>.</summary>
@@ -51,19 +43,28 @@ public class Query<T> : IProjectionSource, ISubquerySource
 
     internal SqlDialect Dialect => Session.Dialect;
 
-    internal bool IsPaged => _skip is not null || _take is not null;
+    internal bool IsPaged => _state.Skip is not null || _state.Take is not null;
+
+    private IReadOnlyList<(Sql.Sql Expression, bool Descending)> Ordering => _state.Ordering;
 
     /// <summary>
     /// The mapping's query filters, translated now so captured values (such as the current tenant)
-    /// are read for every statement, followed by the query's own filters.
+    /// are read for every statement, followed by the query's own filters. A derived source
+    /// (<see cref="Distinct"/>, a set operation) applied the mapping's filters inside it.
     /// </summary>
-    private IReadOnlyList<Sql.Sql> Filters => _ignoreQueryFilters || Map.QueryFilters.Count == 0
-        ? _filters
-        : [.. Map.QueryFilters.Select(f => ExpressionTranslator.Predicate(f, Map, Dialect)), .. _filters];
+    private IReadOnlyList<Sql.Sql> Filters => _state.IgnoreQueryFilters || _state.Source is not null || Map.QueryFilters.Count == 0
+        ? _state.Filters
+        : [.. Map.QueryFilters.Select(f => ExpressionTranslator.Predicate(f, Map, Dialect)), .. _state.Filters];
 
-    private bool HasFilters => _filters.Count > 0 || (!_ignoreQueryFilters && Map.QueryFilters.Count > 0);
+    private bool HasFilters => _state.Filters.Count > 0 || (!_state.IgnoreQueryFilters && _state.Source is null && Map.QueryFilters.Count > 0);
 
     private Sql.Sql AllColumns => Sql.Sql.Join(", ", Map.Columns.Select(c => Sql.Sql.Identifier(c.Name)));
+
+    /// <summary>
+    /// The alias of a derived table read in place of the table: the table's own name, which
+    /// correlated subqueries use to refer to its rows.
+    /// </summary>
+    private string Alias => ExpressionTranslator.TableAlias(Map.Table);
 
     // ---- Composition ---------------------------------------------------------------------------
 
@@ -88,7 +89,7 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// Skips the query filters configured with <c>HasQueryFilter</c>, for example to read
     /// soft-deleted rows. Filters added with <see cref="Where(Expression{Func{T, bool}})"/> still apply.
     /// </summary>
-    public Query<T> IgnoreQueryFilters() => new(Session, Map, _filters, _ordering, _skip, _take, true);
+    public Query<T> IgnoreQueryFilters() => With(_state with { IgnoreQueryFilters = true });
 
     /// <summary>Sorts ascending by a key, replacing any previous ordering.</summary>
     public Query<T> OrderBy<TKey>(Expression<Func<T, TKey>> key) => Order(key, descending: false, replace: true);
@@ -108,8 +109,8 @@ public class Query<T> : IProjectionSource, ISubquerySource
         ArgumentOutOfRangeException.ThrowIfNegative(count);
 
         // Skipping within a page shrinks the page: Take(10).Skip(5) is 5 rows, not 10.
-        var skip = (int)Math.Min((long)(_skip ?? 0) + count, int.MaxValue);
-        return new(Session, Map, _filters, _ordering, skip, _take is int take ? Math.Max(take - count, 0) : null, _ignoreQueryFilters);
+        var skip = (int)Math.Min((long)(_state.Skip ?? 0) + count, int.MaxValue);
+        return With(_state with { Skip = skip, Take = _state.Take is int take ? Math.Max(take - count, 0) : null });
     }
 
     /// <summary>Limits the number of rows. Like LINQ, it never raises an earlier, smaller Take.</summary>
@@ -118,6 +119,33 @@ public class Query<T> : IProjectionSource, ISubquerySource
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         return Limit(count);
     }
+
+    /// <summary>
+    /// Returns each distinct row once (<c>SELECT DISTINCT</c>), comparing every mapped column. A
+    /// paged query is paged first, as in LINQ; otherwise its ordering is dropped, since distinct
+    /// rows have no order. Filter, sort and page the result as any query.
+    /// </summary>
+    public Query<T> Distinct() => Derived(DistinctSql(AllColumns));
+
+    /// <summary>
+    /// Combines the rows of this query and <paramref name="other"/>, each distinct row once
+    /// (<c>UNION</c>). Each query keeps its own filters and paging; filter, sort and page the result
+    /// as any query. Two rows are the same when every mapped column is equal, <c>NULL</c>s included.
+    /// </summary>
+    /// <example><code>var notable = people.Where(p =&gt; p.Age &gt; 60).Union(people.Where(p =&gt; p.Vip)).OrderBy(p =&gt; p.Name);</code></example>
+    public Query<T> Union(Query<T> other) => Combine(other, "UNION", nameof(Union));
+
+    /// <summary>
+    /// Appends the rows of <paramref name="other"/> to this query's, duplicates included
+    /// (<c>UNION ALL</c>). Like a SQL set operation, the result has no order until you sort it.
+    /// </summary>
+    public Query<T> Concat(Query<T> other) => Combine(other, "UNION ALL", nameof(Concat));
+
+    /// <summary>Returns the distinct rows found in both this query and <paramref name="other"/> (<c>INTERSECT</c>).</summary>
+    public Query<T> Intersect(Query<T> other) => Combine(other, "INTERSECT", nameof(Intersect));
+
+    /// <summary>Returns the distinct rows of this query that <paramref name="other"/> doesn't return (<c>EXCEPT</c>).</summary>
+    public Query<T> Except(Query<T> other) => Combine(other, "EXCEPT", nameof(Except));
 
     /// <summary>
     /// Selects only some values per row: one value (<c>x =&gt; x.Name</c>), an anonymous type
@@ -142,13 +170,17 @@ public class Query<T> : IProjectionSource, ISubquerySource
     }
 
     /// <summary>Caps the number of rows without raising a smaller <see cref="Take"/> already set.</summary>
-    internal Query<T> Limit(int count) =>
-        new(Session, Map, _filters, _ordering, _skip, _take is int take ? Math.Min(take, count) : count, _ignoreQueryFilters);
+    internal Query<T> Limit(int count) => With(_state with { Take = _state.Take is int take ? Math.Min(take, count) : count });
+
+    private Query<T> With(State state) => new(Session, Map, state);
+
+    /// <summary>A query over the rows of a derived table, read under <see cref="Alias"/> in place of the table.</summary>
+    private Query<T> Derived(Sql.Sql source) => With(State.Table with { Source = source });
 
     private Query<T> Filter(Sql.Sql condition)
     {
         ThrowIfPaged("Where");
-        return new(Session, Map, [.. _filters, condition], _ordering, _skip, _take, _ignoreQueryFilters);
+        return With(_state with { Filters = [.. _state.Filters, condition] });
     }
 
     /// <summary>
@@ -458,34 +490,43 @@ public class Query<T> : IProjectionSource, ISubquerySource
         return sql;
     }
 
-    Sql.Sql ISubquerySource.FromItem(string alias) => !IsPaged && !HasFilters
+    Sql.Sql ISubquerySource.FromItem(string alias) => !IsPaged && !HasFilters && _state.Source is null
         ? Sql.Sql.Identifier(Map.Table).Append(" AS ").AppendIdentifier(alias)
         : Sql.Sql.Empty.Append("(").Append(SelectSql(AllColumns, ordered: false)).Append(") AS ").AppendIdentifier(alias);
 
     /// <summary>The <c>WHERE</c> clause of the filters (empty without filters); paging is not included.</summary>
     internal Sql.Sql WhereClause() => WhereClause(Filters);
 
+    /// <summary>What the query reads from: the table, or a derived table under <see cref="Alias"/>.</summary>
+    internal Sql.Sql FromClause() => _state.Source is { } source
+        ? Sql.Sql.Empty.Append("(").Append(source).Append(") AS ").AppendIdentifier(Alias)
+        : Sql.Sql.Identifier(Map.Table);
+
     private Sql.Sql SelectSql(Sql.Sql selectList, bool ordered, bool distinct)
     {
         // Take(0) becomes an always-false filter with no ORDER BY or paging: SQL Server rejects
         // "FETCH NEXT 0 ROWS", and ORDER BY without paging inside a subquery (Count, Any).
-        var sql = Sql.Sql.Empty.Append(distinct ? "SELECT DISTINCT " : "SELECT ").Append(selectList).Append(" FROM ").AppendIdentifier(Map.Table);
+        var sql = Sql.Sql.Empty.Append(distinct ? "SELECT DISTINCT " : "SELECT ").Append(selectList).Append(" FROM ").Append(FromClause());
         var filters = Filters;
-        if (_take == 0)
+        if (_state.Take == 0)
         {
             return sql.Append(WhereClause([.. filters, Sql.Sql.Raw("1 = 0")]));
         }
 
         sql.Append(WhereClause(filters));
-        var orderBy = _ordering.Count > 0 && (ordered || IsPaged);
+        var orderBy = Ordering.Count > 0 && (ordered || IsPaged);
         if (orderBy)
         {
-            sql.Append(" ORDER BY ").Append(OrderByList(_ordering));
+            sql.Append(" ORDER BY ").Append(OrderByList(Ordering));
         }
 
-        Dialect.AppendPaging(sql, _skip, _take, orderBy);
+        Dialect.AppendPaging(sql, _state.Skip, _state.Take, orderBy);
         return sql;
     }
+
+    private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
+        ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))
+        : Sql.Sql.Empty;
 
     private static Sql.Sql OrderByList(IEnumerable<(Sql.Sql Expression, bool Descending)> ordering) =>
         Sql.Sql.Join(", ", ordering.Select(o => o.Descending ? Sql.Sql.Empty.Append(o.Expression).Append(" DESC") : o.Expression));
@@ -496,23 +537,38 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// keeps no order, and PostgreSQL and SQL Server reject ordering by a column it doesn't select.
     /// </summary>
     private Sql.Sql DistinctSql(Sql.Sql selectList) => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT DISTINCT ").Append(selectList).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
+        ? Sql.Sql.Empty.Append("SELECT DISTINCT ").Append(selectList).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
         : SelectSql(selectList, ordered: false, distinct: true);
 
-    /// <summary>
-    /// The alias of the derived table a page is read from: the table's own name, which correlated
-    /// subqueries in the select list use to refer to its rows.
-    /// </summary>
-    private string PageAlias => Map.Table[(Map.Table.LastIndexOf('.') + 1)..];
+    /// <summary>Combines this query's rows with another's through a set operator, in a derived table.</summary>
+    private Query<T> Combine(Query<T> other, string setOperator, string operation)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (!ReferenceEquals(other.Dialect, Dialect))
+        {
+            throw new NotSupportedException($"{operation} needs two queries for the same database, but got {Dialect} and {other.Dialect}.");
+        }
 
-    private static Sql.Sql WhereClause(IReadOnlyList<Sql.Sql> filters) => filters.Count > 0
-        ? Sql.Sql.Empty.Append(" WHERE ").Append(Sql.Sql.Join(" AND ", filters))
-        : Sql.Sql.Empty;
+        if (!Map.Columns.Select(c => c.Name).SequenceEqual(other.Map.Columns.Select(c => c.Name), StringComparer.Ordinal))
+        {
+            throw new NotSupportedException($"{operation} needs two queries that map {typeof(T).Name} to the same columns.");
+        }
+
+        return Derived(Operand().Append(" " + setOperator + " ").Append(other.Operand()));
+    }
+
+    /// <summary>
+    /// The query as one side of a set operation. Its ordering is dropped, as SQL requires; a page
+    /// is read from a derived table, since a set operation's sides can't be paged in SQLite.
+    /// </summary>
+    private Sql.Sql Operand() => IsPaged
+        ? Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
+        : SelectSql(AllColumns, ordered: false);
 
     /// <summary>Applies an aggregate to the filtered rows, or to the page when Skip/Take is set.</summary>
     private Sql.Sql AggregateSql(Sql.Sql aggregate) => IsPaged
-        ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
-        : Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM ").AppendIdentifier(Map.Table).Append(WhereClause());
+        ? Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
+        : Sql.Sql.Empty.Append("SELECT ").Append(aggregate).Append(" FROM ").Append(FromClause()).Append(WhereClause());
 
     private Sql.Sql Aggregate(string function, LambdaExpression selector)
     {
@@ -544,18 +600,18 @@ public class Query<T> : IProjectionSource, ISubquerySource
     /// </summary>
     private Sql.Sql LastSql()
     {
-        if (_ordering.Count == 0)
+        if (Ordering.Count == 0)
         {
             throw new NotSupportedException("Last and LastOrDefault need an ordering; call OrderBy first.");
         }
 
-        var reversed = _ordering.Select(o => (o.Expression, !o.Descending)).ToList();
+        var reversed = Ordering.Select(o => (o.Expression, !o.Descending)).ToList();
         if (!IsPaged)
         {
-            return new Query<T>(Session, Map, _filters, reversed, _skip, _take, _ignoreQueryFilters).Limit(1).ToSql();
+            return With(_state with { Ordering = reversed }).Limit(1).ToSql();
         }
 
-        var sql = Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(PageAlias)
+        var sql = Sql.Sql.Empty.Append("SELECT ").Append(AllColumns).Append(" FROM (").Append(ToSql()).Append(") AS ").AppendIdentifier(Alias)
             .Append(" ORDER BY ").Append(OrderByList(reversed));
         Dialect.AppendPaging(sql, null, 1, hasOrderBy: true);
         return sql;
@@ -597,15 +653,39 @@ public class Query<T> : IProjectionSource, ISubquerySource
         ArgumentNullException.ThrowIfNull(key);
         ThrowIfPaged(replace ? "OrderBy" : "ThenBy");
         var expression = ExpressionTranslator.Value(key, Map, Dialect);
-        IReadOnlyList<(Sql.Sql, bool)> ordering = replace ? [(expression, descending)] : [.. _ordering, (expression, descending)];
-        return new(Session, Map, _filters, ordering, _skip, _take, _ignoreQueryFilters);
+        IReadOnlyList<(Sql.Sql, bool)> ordering = replace ? [(expression, descending)] : [.. Ordering, (expression, descending)];
+        return With(_state with { Ordering = ordering });
     }
 
     private void ThrowIfShaped(string operation)
     {
-        if (_ordering.Count > 0 || IsPaged)
+        if (_state.Source is not null)
+        {
+            throw new NotSupportedException($"{operation} cannot follow Distinct, Union, Concat, Intersect or Except; filter the table with Where instead.");
+        }
+
+        if (Ordering.Count > 0 || IsPaged)
         {
             throw new NotSupportedException($"{operation} cannot be combined with ordering, Skip or Take; filter with Where instead.");
         }
+    }
+
+    /// <summary>The parts of a query; each composition method copies it with one part changed.</summary>
+    /// <param name="Filters">The query's own filters (the mapping's are added when building SQL).</param>
+    /// <param name="Ordering">The sort keys.</param>
+    /// <param name="Skip">The rows to skip.</param>
+    /// <param name="Take">The most rows to return.</param>
+    /// <param name="IgnoreQueryFilters">Whether to skip the mapping's query filters.</param>
+    /// <param name="Source">A derived table read in place of the table, for <c>Distinct</c> and set operations.</param>
+    private sealed record State(
+        IReadOnlyList<Sql.Sql> Filters,
+        IReadOnlyList<(Sql.Sql Expression, bool Descending)> Ordering,
+        int? Skip,
+        int? Take,
+        bool IgnoreQueryFilters,
+        Sql.Sql? Source)
+    {
+        /// <summary>Every row of the table.</summary>
+        public static readonly State Table = new([], [], null, null, false, null);
     }
 }

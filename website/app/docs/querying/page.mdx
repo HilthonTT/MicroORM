@@ -23,6 +23,8 @@ var total = await active.CountAsync();
 | `ThenBy(c => c.X)` / `ThenByDescending` | adds a secondary sort key |
 | `Skip(n)` / `Take(n)` | paging in the dialect's syntax |
 | `IgnoreQueryFilters()` | skips the entity's [query filters](/docs/mapping/#query-filters) |
+| `Distinct()` | `SELECT DISTINCT` over every mapped column; see [Set operations](#set-operations) |
+| `Union(q)` / `Concat(q)` / `Intersect(q)` / `Except(q)` | `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`; see [Set operations](#set-operations) |
 | `GroupBy(c => c.X)` | `GROUP BY`; see [Grouping](#grouping) |
 
 ## Running a query
@@ -178,6 +180,47 @@ var debited = await db.Table<Account>()
 MySQL and MariaDB can't return updated rows, so there it throws `NotSupportedException`. On SQL
 Server, `OUTPUT` fails on a table with triggers.
 
+## Set operations
+
+`Union`, `Concat`, `Intersect` and `Except` combine two queries of the same entity. `Distinct`
+removes duplicate rows. The result is a query like any other: filter, sort, page, project, group or
+aggregate it.
+
+```csharp
+var people = db.Table<Person>();
+
+// The youngest and the oldest: each side keeps its own ordering and paging.
+var ends = await people.OrderBy(p => p.Age).Take(1)
+    .Union(people.OrderByDescending(p => p.Age).Take(1))
+    .OrderBy(p => p.Name)
+    .ToListAsync();
+// SELECT ... FROM (SELECT ... FROM (SELECT ... ORDER BY "age" LIMIT 1) AS "people" UNION SELECT ...) AS "people" ORDER BY "name"
+```
+
+| Method | SQL | Rows |
+|---|---|---|
+| `Union(q)` | `UNION` | rows in either query, each distinct row once |
+| `Concat(q)` | `UNION ALL` | every row of both queries, duplicates included |
+| `Intersect(q)` | `INTERSECT` | distinct rows in both queries |
+| `Except(q)` | `EXCEPT` | distinct rows of the first query that the second doesn't return |
+| `Distinct()` | `SELECT DISTINCT` | each distinct row once |
+
+- Two rows are the same when every mapped column is equal, `NULL`s included.
+- Each side keeps its own filters (including [query filters](/docs/mapping/#query-filters)),
+  ordering and paging. The result is read from a derived table under the table's own name, so
+  correlated subqueries still refer to it.
+- Like SQL, the result has no order until you call `OrderBy`.
+- `ExecuteUpdate` and `ExecuteDelete` reject a combined or distinct query. Filter the table instead.
+- `Intersect` and `Except` need MySQL 8.0.31 or later.
+
+Projections combine too, even across tables, as long as they select the same type:
+
+```csharp
+var everyone = people.Select(p => p.Email).Union(db.Table<Customer>().Select(c => c.Email));
+var neverOrdered = people.Select(p => p.Id).Except(orders.Select(o => o.CustomerId));
+var lonely = await people.Where(p => neverOrdered.Contains(p.Id)).ToListAsync();
+```
+
 ## Subqueries
 
 `Any` on another typed query becomes `EXISTS`. Its predicate can use the outer row, so the
@@ -240,6 +283,7 @@ A projection has the terminal methods of a query, and a few of its own:
 | Method | What it does |
 |---|---|
 | `Distinct()` | `SELECT DISTINCT`. After `Skip` or `Take`, the page is taken first, as in LINQ. Any other ordering is dropped, because distinct rows have no order. |
+| `Union`, `Concat`, `Intersect`, `Except` | combine with another projection of the same type, from any table; see [Set operations](#set-operations) |
 | `CountAsync()` | counts the projected rows (the distinct ones after `Distinct()`) |
 | `AnyAsync()` | whether there are any projected rows |
 | `ContainsAsync(value)` | whether a one-value projection contains `value` (`null` included) |

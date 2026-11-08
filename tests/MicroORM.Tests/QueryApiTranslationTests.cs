@@ -13,6 +13,8 @@ namespace MicroORM.Tests;
 /// <summary>Checks, without a database, the SQL each dialect gets for the typed query API's newer operators and translations.</summary>
 public class QueryApiTranslationTests
 {
+    private const string PersonColumns = "\"id\", \"name\", \"email\", \"age\", \"active\", \"mood\", \"created_at\", \"external_id\"";
+
     private static readonly DateTime Moment = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private static Table<Person> People(SqlDialect dialect) => Db(dialect).Table<Person>();
@@ -228,6 +230,55 @@ public class QueryApiTranslationTests
         var people = People(SqlDialect.SqlServer);
         Assert.Throws<NotSupportedException>(() => people.Last());
         Assert.Throws<NotSupportedException>(() => people.Where(p => p.Active).LastOrDefault());
+    }
+
+    // ---- Distinct and set operations ------------------------------------------------------------
+
+    [Fact]
+    public void Distinct_reads_from_a_derived_table_that_composes()
+    {
+        Assert.Equal(
+            $"SELECT {PersonColumns} FROM (SELECT DISTINCT {PersonColumns} FROM \"micro_people\") AS \"micro_people\" WHERE (\"age\" > @p0) ORDER BY \"name\" LIMIT 2",
+            People(SqlDialect.Sqlite).Distinct().Where(p => p.Age > 3).OrderBy(p => p.Name).Take(2).ToString());
+    }
+
+    [Fact]
+    public void Set_operations_page_each_side_in_a_derived_table()
+    {
+        var people = People(SqlDialect.SqlServer);
+        var columns = string.Join(", ", PersonColumns.Split(", ").Select(c => "[" + c.Trim('"') + "]"));
+        Assert.Equal(
+            $"SELECT {columns} FROM (SELECT {columns} FROM [micro_people] WHERE ([age] > @p0) UNION " +
+            $"SELECT {columns} FROM (SELECT {columns} FROM [micro_people] ORDER BY [age] OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY) AS [micro_people]) AS [micro_people] ORDER BY [name]",
+            people.Where(p => p.Age > 40).Union(people.OrderBy(p => p.Age).Take(1)).OrderBy(p => p.Name).ToSql().Render(SqlDialect.SqlServer).Text);
+
+        var sqlite = People(SqlDialect.Sqlite);
+        Assert.Contains(" UNION ALL ", sqlite.Concat(sqlite).ToString(), StringComparison.Ordinal);
+        Assert.Contains(" INTERSECT ", sqlite.Intersect(sqlite).ToString(), StringComparison.Ordinal);
+        Assert.Contains(" EXCEPT ", sqlite.Except(sqlite).ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Set_operations_combine_projections_of_any_table()
+    {
+        var db = Db(SqlDialect.Sqlite);
+        Assert.Equal(
+            "SELECT * FROM (SELECT * FROM (SELECT \"id\" AS \"value\" FROM \"micro_people\") AS \"operand\" UNION " +
+            "SELECT * FROM (SELECT \"person_id\" AS \"value\" FROM \"micro_orders\" ORDER BY \"amount\" LIMIT 3) AS \"operand\") AS \"combined\"",
+            db.Table<Person>().Select(p => (int?)p.Id).Union(db.Table<Order>().OrderBy(o => o.Amount).Take(3).Select(o => o.PersonId)).ToString());
+    }
+
+    [Fact]
+    public void Set_operations_reject_mismatched_queries_and_writes()
+    {
+        var sqlite = People(SqlDialect.Sqlite);
+        Assert.Throws<NotSupportedException>(() => sqlite.Union(People(SqlDialect.PostgreSql)));
+
+        var plain = new MicroDb(SqlDialect.Sqlite, NoConnection).Table<Person>();
+        Assert.Throws<NotSupportedException>(() => sqlite.Union(plain));
+
+        Assert.Throws<NotSupportedException>(() => sqlite.Distinct().ExecuteDelete());
+        Assert.Throws<NotSupportedException>(() => sqlite.Union(sqlite).ExecuteUpdate(s => s.Set(p => p.Age, 1)));
     }
 
     private static DbConnection NoConnection() => throw new InvalidOperationException("No database in translation tests.");
